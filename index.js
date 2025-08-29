@@ -60,40 +60,6 @@
         }
     });
 
-    // --- ONE-TIME DATA SEEDING ENDPOINT ---
-    app.get('/api/seed-database', async (req, res) => {
-        console.log('Attempting to seed database...');
-        try {
-            const userId = 'default-user';
-            // NOTE: In a real app, you would upload these files or have them in cloud storage.
-            // For this iPad setup, we'll embed the content directly.
-            const healthFilesContent = {
-                '2025-08-26_AM.json': {"metrics":{"date":"2025-08-26","sleep":{"dailySleepDTO":{"sleepScores":{"overall":{"value":75}}}},"hrv":{"hrvSummary":{"status":"BALANCED"}},"resting_hr":{"allMetrics":{"metricsMap":{"WELLNESS_RESTING_HEART_RATE":[{"value":41}]}}},"body_battery":[{},{"charged":51,"drained":67}]}},
-                '2025-08-27_AM.json': {"metrics":{"date":"2025-08-27","sleep":{"dailySleepDTO":{"sleepScores":{"overall":{"value":88}}}},"hrv":{"hrvSummary":{"status":"BALANCED"}},"resting_hr":{"allMetrics":{"metricsMap":{"WELLNESS_RESTING_HEART_RATE":[{"value":39}]}}},"body_battery":[{},{"charged":60,"drained":55}]}},
-                '2025-08-28_PM.json': {"metrics":{"date":"2025-08-28","sleep":{"dailySleepDTO":{"sleepScores":{"overall":{"value":93}}}},"hrv":{"hrvSummary":{"status":"UNBALANCED"}},"resting_hr":{"allMetrics":{"metricsMap":{"WELLNESS_RESTING_HEART_RATE":[{"value":37}]}}},"body_battery":[{},{"charged":40,"drained":63}]}}
-            };
-
-            let count = 0;
-            for (const [fileName, fileContent] of Object.entries(healthFilesContent)) {
-                const data = fileContent.metrics;
-                const processedData = {
-                    date: data.date,
-                    sleepScore: data.sleep.dailySleepDTO.sleepScores.overall.value,
-                    hrvStatus: data.hrv.hrvSummary.status,
-                    restingHeartRate: data.resting_hr.allMetrics.metricsMap.WELLNESS_RESTING_HEART_RATE[0].value,
-                    bodyBatteryCharged: data.body_battery[1]?.charged || 0,
-                    bodyBatteryDrained: data.body_battery[1]?.drained || 0,
-                };
-                await db.collection('users').doc(userId).collection('health_data').doc(processedData.date).set(processedData);
-                console.log(`Seeded health data for ${processedData.date}`);
-                count++;
-            }
-            res.status(200).send(`Successfully seeded ${count} health data documents. You should now REMOVE the /api/seed-database endpoint from your index.js file for security.`);
-        } catch (error) {
-            console.error('Error during database seeding:', error);
-            res.status(500).json({ error: 'Failed to seed database.' });
-        }
-    });
 
     app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
     
