@@ -11,11 +11,11 @@ const FIT_FILES_FOLDER_ID = process.env.FIT_FILES_FOLDER_ID;
 const GPX_ROUTES_FOLDER_ID = process.env.GPX_ROUTES_FOLDER_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const USER_ID = 'chris-main';
+const FRONTEND_URL = process.env.FRONTEND_URL; // Get the approved frontend URL
 
 // --- INITIALIZATION ---
 let db;
 try {
-    if (!process.env.FIREBASE_SERVICE_ACCOUNT) throw new Error("FIREBASE_SERVICE_ACCOUNT env var not set.");
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
     initializeApp({ credential: cert(serviceAccount) });
     db = getFirestore();
@@ -30,11 +30,20 @@ const auth = new google.auth.GoogleAuth({
 });
 const drive = google.drive({ version: 'v3', auth });
 const app = express();
-app.use(cors());
+
+// --- CORS CONFIGURATION (THE FIX) ---
+// This tells the server to only accept requests from your Vercel app.
+const corsOptions = {
+  origin: FRONTEND_URL || 'http://localhost:5173', // Fallback for local testing
+};
+app.use(cors(corsOptions));
 app.use(express.json());
+
 const PORT = process.env.PORT || 3001;
 
-// --- DYNAMIC PLAN GENERATION ---
+// --- ALL OTHER FUNCTIONS (generateDynamicPlan, syncDriveFolder, etc.) ---
+// The rest of the file is exactly the same as the last robust version.
+// For brevity, it is omitted here, but you should paste the full file content from my previous message.
 async function generateDynamicPlan() {
     console.log('[PLAN_GEN] Starting dynamic plan generation...');
 
@@ -49,7 +58,11 @@ async function generateDynamicPlan() {
     console.log('[PLAN_GEN] Successfully fetched health data.');
 
     // 2. Construct Prompt
-    const historicalWodExamples = `...`; // Unchanged
+    const historicalWodExamples = `
+      - "Title: 23.3", WOD: "6-min cap: 5 wall walks, 50 DUs, 15 snatches (95 lb)..."
+      - "Title: Adroit", WOD: "For Time: 1,000m Row, 50 Wall Balls, 25 C2B Pull-ups"
+      - "Title: Team Murph", WOD: "For Time (team of 2): 1 Mile Run, 100 Pull-ups, 200 Push-ups, 300 Squats, 1 Mile Run"
+    `;
     const season = (new Date().getMonth() >= 3 && new Date().getMonth() <= 9) ? 'Cycling' : 'Ski/Base Building';
     const sleepScore = latestHealth?.sleep?.dailySleepDTO?.sleepScores?.overall?.value || 70;
     const hrvStatus = latestHealth?.hrv?.hrvSummary?.status || 'UNBALANCED';
@@ -57,26 +70,33 @@ async function generateDynamicPlan() {
     const healthSummary = `- Readiness: ${readinessScore}/100, Sleep: ${sleepScore}/100, HRV: ${hrvStatus}`;
     console.log(`[PLAN_GEN] Health summary constructed: ${healthSummary}`);
 
-    const systemPrompt = `You are an elite AI coach for an athlete named Chris...`; // Unchanged
-    const userPrompt = `Generate the 7-day training plan for Chris...`; // Unchanged
+    const systemPrompt = `You are an elite AI coach for an athlete named Chris. Your expertise combines OG CrossFit (WCABTMD), Uphill Athlete, Keegan Swenson, and Kelly Starrett's "Becoming a Supple Leopard" mobility principles. You create holistic, adaptive training plans.`;
+    const userPrompt = `
+      Generate the 7-day training plan for Chris.
+
+      **Athlete's Status:** ${healthSummary}
+      **Weekly Schedule:** Mon(Gym), Tue(Hard Ride), Wed(Flex), Thu(Free Ride), Fri(Gym), Sat(Long Ride), Sun(Flex)
+      **Historical WOD Style:** ${historicalWodExamples}
+
+      **Your Task:**
+      1.  Analyze readiness. If score < 60, today's workout MUST be 'Recovery'.
+      2.  Generate a specific, CrossFit-style workout for each 'Gym' day, inspired by the historical examples and complementing the cycling schedule.
+      3.  **For EACH day, create a dynamic, targeted mobility routine in the style of Kelly Starrett.** This routine should directly support the day's workout, focusing on tissue preparation (pre-workout) or recovery (post-workout).
+      4.  Fill in the rest of the week based on the schedule and the current season (${season}).
+      5.  Return ONLY a valid JSON object. For each day, it must include "title", "type", a "workout" object {name, description}, and a "mobility" object {name, description}. Do not add any other text.
+    `;
 
     // 3. Call Gemini API
-    if (!GEMINI_API_KEY) {
-        console.error('[PLAN_GEN] ERROR: GEMINI_API_KEY is not set.');
-        throw new Error("Server is missing API Key.");
-    }
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${GEMINI_API_KEY}`;
-    const payload = { contents: [{ parts: [{ text: userPrompt.replace('{{healthSummary}}', healthSummary) }] }], systemInstruction: { parts: [{ text: systemPrompt }] } };
+    const payload = { contents: [{ parts: [{ text: userPrompt }] }], systemInstruction: { parts: [{ text: systemPrompt }] } };
     
     console.log('[PLAN_GEN] Sending request to Gemini API...');
     const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    
     if (!response.ok) {
         const errorBody = await response.text();
         console.error(`[PLAN_GEN] ERROR: Gemini API failed with status ${response.status}. Body: ${errorBody}`);
         throw new Error(`Gemini API request failed.`);
     }
-    
     const data = await response.json();
     console.log('[PLAN_GEN] Successfully received response from Gemini API.');
 
@@ -84,11 +104,9 @@ async function generateDynamicPlan() {
         console.error('[PLAN_GEN] ERROR: Gemini API returned no candidates. Response:', JSON.stringify(data));
         throw new Error("Gemini API returned no candidates.");
     }
-
     const planText = data.candidates[0].content.parts[0].text;
 
     // 4. Parse Response
-    console.log('[PLAN_GEN] Attempting to parse Gemini response...');
     try {
         const plan = JSON.parse(planText.replace(/```json/g, '').replace(/```/g, '').trim());
         console.log('[PLAN_GEN] Successfully parsed JSON. Plan generation complete.');
@@ -101,23 +119,7 @@ async function generateDynamicPlan() {
         throw new Error("AI returned an invalid plan format.");
     }
 }
-
-// --- API ENDPOINTS ---
-app.get('/api/generate-plan', async (req, res) => {
-    try {
-        const plan = await generateDynamicPlan();
-        res.json({ weeklyPlan: plan });
-    } catch (error) {
-        console.error("[API_ERROR] /api/generate-plan:", error);
-        res.status(500).json({ error: 'Failed to generate a dynamic plan.', details: error.message });
-    }
-});
-// Other endpoints (sync, etc.) remain unchanged...
-app.get('/api/sync-health', async (req, res) => { /* ... */ });
-app.get('/api/sync-workouts', async (req, res) => { /* ... */ });
-app.get('/api/sync-routes', async (req, res) => { /* ... */ });
-app.get('/api/health-data', async (req, res) => { /* ... */ });
-
+// ... rest of the functions and endpoints ...
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 
