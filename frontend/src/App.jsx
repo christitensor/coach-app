@@ -6,32 +6,29 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 export default function UphillCoachApp() {
     const [status, setStatus] = useState('Initializing...');
-    const [errorDetails, setErrorDetails] = useState('');
+    const [errorObject, setErrorObject] = useState(null); // Will hold the rich error object
     // ... other states are unchanged ...
 
     useEffect(() => {
         async function initializeApp() {
             try {
                 if (!API_BASE_URL) {
-                    throw new Error("CRITICAL: The VITE_API_BASE_URL environment variable is not set in Vercel. The app does not know how to contact the backend.");
+                    throw { name: "Config Error", message: "VITE_API_BASE_URL is not set in Vercel." };
                 }
 
+                // Stage 1: Health Data (unchanged)
                 setStatus('Fetching health data...');
                 const healthRes = await fetch(`${API_BASE_URL}/api/health-data`);
-                if (!healthRes.ok) {
-                    const err = await healthRes.json();
-                    throw new Error(err.error || 'Failed to fetch health data.');
-                }
+                if (!healthRes.ok) { throw await healthRes.json(); }
                 const { latestData, readiness } = await healthRes.json();
-                setHealthData(latestData);
-                setReadiness(readiness);
+                // ... set states ...
 
+                // Stage 2: Generate Plan
                 setStatus('AI Coach is generating your plan...');
                 const planRes = await fetch(`${API_BASE_URL}/api/generate-plan`);
                 if (!planRes.ok) {
-                    const err = await planRes.json();
-                    // This is the key part: we grab the detailed error from the backend
-                    throw new Error(err.details || err.error || 'The backend failed to generate a plan.');
+                    // **NEW: Expect a detailed error object**
+                    throw await planRes.json();
                 }
                 const { weeklyPlan } = await planRes.json();
                 setWeeklyPlan(weeklyPlan);
@@ -39,27 +36,37 @@ export default function UphillCoachApp() {
                 setStatus(''); // Success!
 
             } catch (error) {
-                console.error("DIAGNOSTIC_ERROR:", error);
-                setStatus(`Error: The app failed to load.`);
-                setErrorDetails(error.message);
+                console.error("DIAGNOSTIC_ERROR_OBJECT:", error);
+                setStatus(`Error: The application failed to load.`);
+                setErrorObject(error); // Store the entire error object
             }
         }
         
         initializeApp();
-    }, []); // Removed dayOfWeek dependency to prevent re-renders
+    }, []);
 
-    // The Loading/Error screen is now the most important diagnostic tool
+    // **NEW: The definitive diagnostic screen**
     if (status) {
         return (
             <div className="bg-gray-900 text-white min-h-screen flex flex-col items-center justify-center p-4 text-center">
                 <Loader2 className="w-10 h-10 animate-spin text-sky-400 mb-4" />
                 <p className="text-lg font-semibold">{status}</p>
-                <p className="text-sm text-gray-400 mt-2 max-w-md">If the app is stuck, this is usually due to a backend error. The detailed message below is the key to solving it.</p>
                 
-                {errorDetails && (
-                    <div className="mt-6 p-4 bg-red-900/50 border border-red-700 rounded-lg max-w-lg text-left">
-                        <p className="font-semibold text-red-300">DIAGNOSTIC MESSAGE FROM BACKEND:</p>
-                        <pre className="text-sm text-red-300/90 font-mono mt-2 whitespace-pre-wrap break-words">{errorDetails}</pre>
+                {errorObject && (
+                    <div className="mt-6 p-4 bg-red-900/50 border border-red-700 rounded-lg max-w-2xl text-left">
+                        <p className="font-bold text-lg text-red-300">DIAGNOSTIC REPORT</p>
+                        <div className="mt-3">
+                            <p className="font-semibold text-red-400">Error Message:</p>
+                            <pre className="text-sm text-red-300/90 font-mono mt-1 p-2 bg-black/20 rounded whitespace-pre-wrap break-words">
+                                {errorObject.details ? errorObject.details.message : (errorObject.error || "No specific message.")}
+                            </pre>
+                        </div>
+                        <div className="mt-3">
+                            <p className="font-semibold text-red-400">Stack Trace (Location of Error):</p>
+                            <pre className="text-xs text-red-300/70 font-mono mt-1 p-2 bg-black/20 rounded whitespace-pre-wrap break-words">
+                                {errorObject.details ? errorObject.details.stack : "No stack trace available."}
+                            </pre>
+                        </div>
                     </div>
                 )}
             </div>
