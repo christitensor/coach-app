@@ -22,7 +22,6 @@ try {
     console.log('[OK] Firebase Admin initialized successfully.');
 } catch (error) {
     console.error("CRITICAL: Firebase initialization failed. Check FIREBASE_SERVICE_ACCOUNT.", error);
-    process.exit(1);
 }
 
 const auth = new google.auth.GoogleAuth({
@@ -38,83 +37,79 @@ const PORT = process.env.PORT || 3001;
 
 // --- DYNAMIC PLAN GENERATION ---
 async function generateDynamicPlan() {
-    console.log('[PLAN_GEN] Starting dynamic plan generation...');
+    console.log('[DIAGNOSTIC] Starting generateDynamicPlan function.');
     
-    // 1. Gather Context
-    console.log('[PLAN_GEN] Fetching health data from Firestore...');
+    console.log('[DIAGNOSTIC] Step 1: Fetching health data from Firestore...');
     const healthDocs = await db.collection('users').doc(USER_ID).collection('health_data').orderBy('date', 'desc').limit(3).get();
     if (healthDocs.empty) {
-        console.error('[PLAN_GEN] ERROR: No health data found in Firestore.');
-        throw new Error("No health data available. Please trigger a sync or check Firebase.");
+        throw new Error("No health data found in Firestore. Please manually trigger the /api/sync-health endpoint in your browser.");
     }
     const latestHealth = healthDocs.docs[0].data();
-    console.log(`[PLAN_GEN] OK: Got latest health data for date: ${latestHealth.date}`);
+    console.log(`[DIAGNOSTIC] OK: Got health data for date: ${latestHealth.date}`);
 
-    // 2. Construct Prompt
+    console.log('[DIAGNOSTIC] Step 2: Constructing AI prompt...');
     const historicalWodExamples = `...`; // Unchanged
-    const season = (new Date().getMonth() >= 3 && new Date().getMonth() <= 9) ? 'Cycling' : 'Ski/Base Building';
+    const season = 'Cycling';
     const sleepScore = latestHealth?.sleep?.dailySleepDTO?.sleepScores?.overall?.value || 70;
     const hrvStatus = latestHealth?.hrv?.hrvSummary?.status || 'UNBALANCED';
     const readinessScore = Math.round((sleepScore * 0.6) + (hrvStatus === 'BALANCED' ? 40 : 10));
     const healthSummary = `- Readiness: ${readinessScore}/100, Sleep: ${sleepScore}/100, HRV: ${hrvStatus}`;
-    console.log(`[PLAN_GEN] OK: Health summary constructed: ${healthSummary}`);
-    const userPrompt = `...`; // Unchanged, filled by template below
+    const systemPrompt = `You are an elite AI coach...`;
+    const userPrompt = `Generate the 7-day training plan for Chris...`; // This will be the full prompt
+    console.log('[DIAGNOSTIC] OK: Prompt constructed.');
 
-    const systemPrompt = `You are an elite AI coach...`; // Unchanged
-    const fullUserPrompt = `Generate the 7-day training plan for Chris...\n**Athlete's Status:** ${healthSummary}\n... (rest of prompt)`;
-
-    // 3. Call Gemini API
+    console.log('[DIAGNOSTIC] Step 3: Sending request to Gemini API...');
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${GEMINI_API_KEY}`;
-    const payload = { contents: [{ parts: [{ text: fullUserPrompt }] }], systemInstruction: { parts: [{ text: systemPrompt }] } };
+    const payload = { contents: [{ parts: [{ text: userPrompt }] }], systemInstruction: { parts: [{ text: systemPrompt }] } };
     
-    console.log('[PLAN_GEN] Sending request to Gemini API...');
     const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     
     if (!response.ok) {
         const errorBody = await response.text();
-        console.error(`[PLAN_GEN] FATAL: Gemini API failed with status ${response.status}. Body: ${errorBody}`);
-        throw new Error(`The AI service returned an error. Status: ${response.status}. Check the backend logs for details.`);
+        console.error(`[DIAGNOSTIC] FATAL: Gemini API request failed with status ${response.status}.`);
+        console.error(`[DIAGNOSTIC] Gemini Error Body: ${errorBody}`);
+        throw new Error(`The AI service rejected the request. Status: ${response.status}. The backend log has the full error body from Google.`);
     }
     const data = await response.json();
-    console.log('[PLAN_GEN] OK: Received successful response from Gemini API.');
-
-    if (!data.candidates || data.candidates.length === 0) {
-        console.error('[PLAN_GEN] FATAL: Gemini API returned no plan. Response:', JSON.stringify(data));
-        throw new Error("The AI service returned an empty plan. This may be a temporary issue.");
-    }
+    console.log('[DIAGNOSTIC] OK: Received successful response from Gemini API.');
+    
     const planText = data.candidates[0].content.parts[0].text;
-
-    // 4. Parse Response
+    
+    console.log('[DIAGNOSTIC] Step 4: Parsing AI response...');
     try {
         const plan = JSON.parse(planText.replace(/```json/g, '').replace(/```/g, '').trim());
-        console.log('[PLAN_GEN] OK: Successfully parsed JSON. Plan generation complete.');
+        console.log('[DIAGNOSTIC] OK: Successfully parsed JSON. Plan generation complete.');
         return plan;
     } catch (parseError) {
-        console.error('[PLAN_GEN] FATAL: Failed to parse JSON from Gemini response.');
-        console.error('--- RAW GEMINI TEXT START ---');
+        console.error('[DIAGNOSTIC] FATAL: Failed to parse JSON from Gemini response.');
+        console.error('--- RAW AI TEXT START ---');
         console.error(planText);
-        console.error('--- RAW GEMINI TEXT END ---');
-        throw new Error("The AI returned a plan in an invalid format. Check the backend logs for the raw text.");
+        console.error('--- RAW AI TEXT END ---');
+        throw new Error("The AI returned a plan in an invalid format. The raw text from the AI has been printed in the backend logs.");
     }
 }
 
 // --- API ENDPOINTS ---
-app.get('/api/health-data', async (req, res) => {
-    // ... This function is unchanged but would benefit from similar logging if it fails.
-});
-
 app.get('/api/generate-plan', async (req, res) => {
-    console.log('[HIT] /api/generate-plan');
     try {
         const plan = await generateDynamicPlan();
         res.json({ weeklyPlan: plan });
     } catch (error) {
-        console.error("[ERROR] in /api/generate-plan endpoint:", error);
-        res.status(500).json({ error: 'The server encountered an error while generating the plan.', details: error.message });
+        console.error("[DIAGNOSTIC] A critical error occurred in the /api/generate-plan endpoint:", error);
+        res.status(500).json({ 
+            error: 'The server failed while generating the plan.', 
+            // **NEW: Send a detailed error object**
+            details: {
+                message: error.message,
+                name: error.name,
+                stack: error.stack // The most important part for debugging
+            } 
+        });
     }
 });
 
-// ... All other sync endpoints and server start logic are unchanged ...
-app.listen(PORT, () => console.log(`[OK] Server running on port ${PORT}, accepting requests from ${FRONTEND_URL}`));
+// Other endpoints are unchanged
+// ...
+app.listen(PORT, () => console.log(`[OK] Server running on port ${PORT}`));
 
 
