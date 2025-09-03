@@ -1,115 +1,253 @@
+'use strict';
+
 const express = require('express');
 const cors = require('cors');
-const { initializeApp, cert } = require('firebase-admin/app');
+const { initializeApp, cert, applicationDefault } = require('firebase-admin/app');
 const { getFirestore, Timestamp } = require('firebase-admin/firestore');
 const fetch = require('cross-fetch');
-const { google } = require('googleapis');
+const { randomUUID } = require('crypto');
 
-// --- CONFIGURATION ---
-const HEALTH_METRICS_FOLDER_ID = process.env.HEALTH_METRICS_FOLDER_ID;
-const FIT_FILES_FOLDER_ID = process.env.FIT_FILES_FOLDER_ID;
-const GPX_ROUTES_FOLDER_ID = process.env.GPX_ROUTES_FOLDER_ID;
+// ====== CONFIG ======
+const PORT = process.env.PORT || 8080;
+const USER_ID = process.env.USER_ID || 'chris-main';
+const FRONTEND_URL = process.env.FRONTEND_URL || '*'; // set to your Vercel URL in prod
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const USER_ID = 'chris-main';
-const FRONTEND_URL = process.env.FRONTEND_URL;
 
-// --- INITIALIZATION ---
-let db;
+// Optional Firestore init via service account JSON
+let db = null;
 try {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    initializeApp({ credential: cert(serviceAccount) });
-    db = getFirestore();
-    console.log('[OK] Firebase Admin initialized successfully.');
-} catch (error) {
-    console.error("CRITICAL: Firebase initialization failed. Check FIREBASE_SERVICE_ACCOUNT.", error);
+  if (!global._adminInitialized) {
+    const svcJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+    if (svcJson) {
+      const credentials = JSON.parse(svcJson);
+      initializeApp({ credential: cert(credentials) });
+    } else {
+      // fallback to ADC if on GCP
+      initializeApp({ credential: applicationDefault() });
+    }
+    global._adminInitialized = true;
+  }
+  db = getFirestore();
+  console.log('[OK] Firestore initialized');
+} catch (err) {
+  console.warn('[WARN] Firestore not initialized; proceeding without DB:', err?.message);
 }
 
-const auth = new google.auth.GoogleAuth({
-    credentials: JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT),
-    scopes: ['https://www.googleapis.com/auth/drive.readonly'],
-});
-const drive = google.drive({ version: 'v3', auth });
+// ====== APP ======
 const app = express();
-const corsOptions = { origin: FRONTEND_URL || 'http://localhost:5173' };
-app.use(cors(corsOptions));
-app.use(express.json());
-const PORT = process.env.PORT || 3001;
+app.use(express.json({ limit: '2mb' }));
+app.use(cors({
+  origin: FRONTEND_URL === '*' ? true : FRONTEND_URL,
+  credentials: true,
+}));
 
-// --- DYNAMIC PLAN GENERATION ---
-async function generateDynamicPlan() {
-    console.log('[DIAGNOSTIC] Starting generateDynamicPlan function.');
-    
-    console.log('[DIAGNOSTIC] Step 1: Fetching health data from Firestore...');
-    const healthDocs = await db.collection('users').doc(USER_ID).collection('health_data').orderBy('date', 'desc').limit(3).get();
-    if (healthDocs.empty) {
-        throw new Error("No health data found in Firestore. Please manually trigger the /api/sync-health endpoint in your browser.");
-    }
-    const latestHealth = healthDocs.docs[0].data();
-    console.log(`[DIAGNOSTIC] OK: Got health data for date: ${latestHealth.date}`);
+// ====== IN-MEMORY JOB STORE (authoritative for job lifecycle) ======
+/**
+ * jobStore[jobId] = {
+ *   id: string,
+ *   status: 'pending' | 'running' | 'completed' | 'failed',
+ *   createdAt: Date,
+ *   updatedAt: Date,
+ *   result: { plan?: any } | null,
+ *   error: { message: string, name?: string, stack?: string } | null,
+ *   ttlMs: number,
+ * }
+ */
+const jobStore = new Map();
+const DEFAULT_TTL_MS = 1000 * 60 * 30; // 30 minutes
 
-    console.log('[DIAGNOSTIC] Step 2: Constructing AI prompt...');
-    const historicalWodExamples = `...`; // Unchanged
-    const season = 'Cycling';
-    const sleepScore = latestHealth?.sleep?.dailySleepDTO?.sleepScores?.overall?.value || 70;
-    const hrvStatus = latestHealth?.hrv?.hrvSummary?.status || 'UNBALANCED';
-    const readinessScore = Math.round((sleepScore * 0.6) + (hrvStatus === 'BALANCED' ? 40 : 10));
-    const healthSummary = `- Readiness: ${readinessScore}/100, Sleep: ${sleepScore}/100, HRV: ${hrvStatus}`;
-    const systemPrompt = `You are an elite AI coach...`;
-    const userPrompt = `Generate the 7-day training plan for Chris...`; // This will be the full prompt
-    console.log('[DIAGNOSTIC] OK: Prompt constructed.');
-
-    console.log('[DIAGNOSTIC] Step 3: Sending request to Gemini API...');
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${GEMINI_API_KEY}`;
-    const payload = { contents: [{ parts: [{ text: userPrompt }] }], systemInstruction: { parts: [{ text: systemPrompt }] } };
-    
-    const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    
-    if (!response.ok) {
-        const errorBody = await response.text();
-        console.error(`[DIAGNOSTIC] FATAL: Gemini API request failed with status ${response.status}.`);
-        console.error(`[DIAGNOSTIC] Gemini Error Body: ${errorBody}`);
-        throw new Error(`The AI service rejected the request. Status: ${response.status}. The backend log has the full error body from Google.`);
-    }
-    const data = await response.json();
-    console.log('[DIAGNOSTIC] OK: Received successful response from Gemini API.');
-    
-    const planText = data.candidates[0].content.parts[0].text;
-    
-    console.log('[DIAGNOSTIC] Step 4: Parsing AI response...');
-    try {
-        const plan = JSON.parse(planText.replace(/```json/g, '').replace(/```/g, '').trim());
-        console.log('[DIAGNOSTIC] OK: Successfully parsed JSON. Plan generation complete.');
-        return plan;
-    } catch (parseError) {
-        console.error('[DIAGNOSTIC] FATAL: Failed to parse JSON from Gemini response.');
-        console.error('--- RAW AI TEXT START ---');
-        console.error(planText);
-        console.error('--- RAW AI TEXT END ---');
-        throw new Error("The AI returned a plan in an invalid format. The raw text from the AI has been printed in the backend logs.");
-    }
+function createJob(ttlMs = DEFAULT_TTL_MS) {
+  const id = randomUUID();
+  const now = new Date();
+  const entry = {
+    id,
+    status: 'pending',
+    createdAt: now,
+    updatedAt: now,
+    result: null,
+    error: null,
+    ttlMs,
+  };
+  jobStore.set(id, entry);
+  return entry;
 }
 
-// --- API ENDPOINTS ---
-app.get('/api/generate-plan', async (req, res) => {
-    try {
-        const plan = await generateDynamicPlan();
-        res.json({ weeklyPlan: plan });
-    } catch (error) {
-        console.error("[DIAGNOSTIC] A critical error occurred in the /api/generate-plan endpoint:", error);
-        res.status(500).json({ 
-            error: 'The server failed while generating the plan.', 
-            // **NEW: Send a detailed error object**
-            details: {
-                message: error.message,
-                name: error.name,
-                stack: error.stack // The most important part for debugging
-            } 
-        });
+function setJobStatus(id, status, payload = {}) {
+  const entry = jobStore.get(id);
+  if (!entry) return;
+  entry.status = status;
+  entry.updatedAt = new Date();
+  if (status === 'completed') {
+    entry.result = { plan: payload.plan ?? null };
+    entry.error = null;
+  } else if (status === 'failed') {
+    entry.error = {
+      message: payload.message || 'Unknown error',
+      name: payload.name || 'Error',
+      stack: payload.stack || undefined,
+    };
+  }
+  jobStore.set(id, entry);
+}
+
+function getJob(id) {
+  return jobStore.get(id) || null;
+}
+
+function gcJobs() {
+  const now = Date.now();
+  for (const [id, entry] of jobStore.entries()) {
+    const age = now - entry.createdAt.getTime();
+    if (age > entry.ttlMs) {
+      jobStore.delete(id);
     }
+  }
+}
+setInterval(gcJobs, 60_000).unref(); // GC every minute
+
+// ====== HELPERS ======
+async function readLatestHealth() {
+  if (!db) {
+    // Dev fallback so you can test locally without Firestore
+    return {
+      latestData: { sleepScore: 80, hrv: 75, readiness: 0.72, timestamp: new Date().toISOString() },
+      readiness: 0.72,
+    };
+  }
+  // users/{USER_ID}/health ordered by timestamp desc
+  const snap = await db.collection('users').doc(USER_ID).collection('health')
+    .orderBy('timestamp', 'desc').limit(1).get();
+  if (snap.empty) return { latestData: null, readiness: null };
+  const doc = snap.docs[0].data();
+  return { latestData: doc, readiness: doc.readiness ?? null };
+}
+
+async function writePlan(plan, jobId) {
+  if (!db) return null;
+  const ref = db.collection('users').doc(USER_ID).collection('plans').doc(jobId);
+  await ref.set({
+    jobId,
+    plan,
+    createdAt: Timestamp.now(),
+  });
+  return { id: ref.id };
+}
+
+async function callGeminiForPlan({ health }) {
+  if (!GEMINI_API_KEY) {
+    // Dev stub
+    return {
+      week: [
+        { day: 'Mon', focus: 'Recovery spin + mobility', details: '45min Z1; hip/ankle care' },
+        { day: 'Tue', focus: 'Group ride HIIT + CrossFit accessory', details: '3x8min @ 105% FTP' },
+        { day: 'Wed', focus: 'Gym or MTB fun lap', details: 'Strength hinge/pull; Z2 60–90' },
+        { day: 'Thu', focus: 'Threshold focus', details: '2x20min @ 95% FTP' },
+        { day: 'Fri', focus: 'Partner e-MTB social', details: 'Keep Z1/low Z2; mobility' },
+        { day: 'Sat', focus: 'Long endurance', details: '3–4h Z2; fueling practice' },
+        { day: 'Sun', focus: 'CrossFit + mobility', details: 'Chipper; posterior chain reset' },
+      ],
+      meta: { source: 'stub', readiness: health?.readiness ?? null },
+    };
+  }
+
+  // Minimal Gemini call; adjust model/version as desired
+  const prompt = `Generate a 7-day integrated training plan considering readiness=${health?.readiness}. Include CrossFit and mobility a la Supple Leopard.`;
+  const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=' + GEMINI_API_KEY, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.6 },
+    }),
+  });
+  if (!res.ok) {
+    const errTxt = await res.text().catch(() => '');
+    const e = new Error(`Gemini API error ${res.status}: ${errTxt.slice(0, 400)}`);
+    e.name = 'GeminiAPIError';
+    throw e;
+  }
+  const data = await res.json();
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || 'No content';
+  return { week: text, meta: { source: 'gemini' } };
+}
+
+// ====== ROUTES ======
+app.get('/api/health-data', async (req, res) => {
+  try {
+    const data = await readLatestHealth();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({
+      error: true,
+      message: 'Failed to load health data',
+      details: { message: error.message, name: error.name, stack: error.stack }
+    });
+  }
 });
 
-// Other endpoints are unchanged
-// ...
-app.listen(PORT, () => console.log(`[OK] Server running on port ${PORT}`));
+app.post('/api/start-plan-generation', async (req, res) => {
+  // Return immediately with a jobId
+  const job = createJob();
+  res.json({ jobId: job.id, status: job.status });
 
+  // Background work
+  (async () => {
+    try {
+      setJobStatus(job.id, 'running');
+      const health = await readLatestHealth();
+      const plan = await callGeminiForPlan({ health });
+      await writePlan(plan, job.id).catch((e) => {
+        console.warn('[WARN] writePlan failed:', e.message);
+      });
+      setJobStatus(job.id, 'completed', { plan });
+    } catch (error) {
+      setJobStatus(job.id, 'failed', {
+        message: error.message,
+        name: error.name,
+        stack: error.stack,
+      });
+    }
+  })();
+});
 
+// Single source of truth for job status; NEVER change these enum strings
+const VALID_JOB_STATUS = new Set(['pending', 'running', 'completed', 'failed']);
+
+app.get('/api/plan-status/:jobId', (req, res) => {
+  const { jobId } = req.params;
+  const job = getJob(jobId);
+  if (!job) {
+    return res.status(404).json({ error: true, message: 'Job not found' });
+  }
+  if (!VALID_JOB_STATUS.has(job.status)) {
+    // Defensive: normalize unknown statuses as failed
+    setJobStatus(job.id, 'failed', { message: `Invalid status: ${job.status}` });
+  }
+  const body = {
+    jobId: job.id,
+    status: job.status,
+    updatedAt: job.updatedAt.toISOString(),
+    result: job.status === 'completed' ? job.result : null,
+    error: job.status === 'failed' ? job.error : null,
+  };
+  // Hint with status codes, but the client should rely on body.status
+  if (job.status === 'completed' || job.status === 'failed') {
+    return res.status(200).json(body);
+  } else {
+    return res.status(202).json(body);
+  }
+});
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true, uptime: process.uptime(), jobs: jobStore.size });
+});
+
+// Fallback
+app.use((req, res) => {
+  res.status(404).json({ error: true, message: 'Not found' });
+});
+
+app.listen(PORT, () => {
+  console.log(`[OK] Server listening on :${PORT}`);
+});
