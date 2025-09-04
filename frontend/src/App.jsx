@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://coach-app-njh2.onrender.com';
+const API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL || 'https://coach-app-njh2.onrender.com'
+).replace(/\/+$/, ''); // strip trailing slashes
 
 function StatusBanner({ status }) {
   if (!status) return null;
