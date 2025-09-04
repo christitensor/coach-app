@@ -2,6 +2,7 @@
 
 const express = require('express');
 const cors = require('cors');
+app.use(cors({ origin: true, credentials: true }));
 const { initializeApp, cert, applicationDefault } = require('firebase-admin/app');
 const { getFirestore, Timestamp } = require('firebase-admin/firestore');
 const fetch = require('cross-fetch');
