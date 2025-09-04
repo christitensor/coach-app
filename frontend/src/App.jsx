@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://coach-app-njh2.onrender.com';
 
 function StatusBanner({ status }) {
   if (!status) return null;
@@ -121,6 +121,7 @@ export default function App() {
   return (
     <div style={{ maxWidth: 760, margin: '40px auto', fontFamily: 'system-ui, sans-serif' }}>
       <h1>The Uphill Athlete AI Coach</h1>
+      <div style={{fontSize:12,opacity:0.7,marginBottom:8}}>API: {API_BASE_URL || '(unset)'}</div>
       <StatusBanner status={status} />
 
       {error && (
