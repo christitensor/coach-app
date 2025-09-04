@@ -17,7 +17,9 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 let db = null;
 try {
   if (!global._adminInitialized) {
-    const svcJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+    const svcJson =
+      process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
+      process.env.FIREBASE_SERVICE_ACCOUNT; // <- your current key
     if (svcJson) {
       const credentials = JSON.parse(svcJson);
       initializeApp({ credential: cert(credentials) });
