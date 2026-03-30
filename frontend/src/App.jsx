@@ -1,268 +1,917 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Bike, Dumbbell, Heart, Brain, Sparkles, Loader2, Info, BedDouble, BatteryCharging, Activity,
-  Calendar, ChevronDown, ChevronUp, MapPin, CheckCircle2, XCircle, Timer
+  Activity, BatteryCharging, BedDouble, Bike, Brain, CheckCircle2,
+  ChevronDown, ChevronUp, Dumbbell, Flame, Heart, Loader2, LogOut,
+  MapPin, Mountain, Navigation, RefreshCw, Route, Sparkles,
+  Timer, TrendingUp, User, XCircle, Zap, PersonStanding, Waves
 } from 'lucide-react';
 
-// -------- API base (robust) --------
-const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL || 'https://coach-app-njh2.onrender.com'
-).replace(/\/+$/, '');
+const API = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/+$/, '');
 
-// -------- Small UI bits --------
-const Pill = ({ tone='info', children }) => {
-  const toneMap = {
-    info:  'bg-sky-900/40 text-sky-300 border border-sky-700/50',
-    good:  'bg-emerald-900/30 text-emerald-300 border border-emerald-700/50',
-    warn:  'bg-amber-900/30 text-amber-300 border border-amber-700/40',
-    bad:   'bg-rose-900/30 text-rose-300 border border-rose-700/50',
-    dim:   'bg-gray-800 text-gray-300 border border-gray-700'
-  };
-  return <span className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-sm ${toneMap[tone]}`}>{children}</span>;
-};
+// ─── tiny helpers ────────────────────────────────────────────────────────────
 
-const Section = ({ title, icon, children, defaultOpen=true }) => {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <div className="border border-gray-800/80 rounded-xl bg-gray-900/40 overflow-hidden">
-      <button onClick={() => setOpen(!open)} className="w-full px-4 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-3 text-gray-200">
-          {icon}{title && <h3 className="font-semibold">{title}</h3>}
-        </div>
-        {open ? <ChevronUp className="w-5 h-5 text-gray-400" /> : <ChevronDown className="w-5 h-5 text-gray-400" />}
-      </button>
-      <div className={`${open ? 'block' : 'hidden'} px-4 pb-4`}>
-        {children}
-      </div>
-    </div>
-  );
-};
+const cn = (...cls) => cls.filter(Boolean).join(' ');
 
-const StatCard = ({ icon, label, value, sub }) => (
-  <div className="bg-gray-900/60 border border-gray-800 rounded-lg p-4">
-    <div className="flex items-center justify-between">
-      <span className="text-gray-400 text-sm">{label}</span>
-      {icon}
-    </div>
-    <div className="mt-2 flex items-baseline gap-2">
-      <span className="text-2xl font-bold text-white">{value ?? '—'}</span>
-      {sub && <span className="text-xs text-gray-400">{sub}</span>}
-    </div>
-  </div>
-);
+const fmt = (v, fallback = '—') => (v == null ? fallback : v);
 
-// -------- Data helpers --------
-const iconFor = (type) => {
-  if (!type) return <Dumbbell className="w-5 h-5 text-gray-400" />;
-  const t = String(type).toLowerCase();
-  if (t.includes('ride') || t.includes('bike') || t.includes('cycle')) return <Bike className="w-5 h-5 text-sky-400" />;
-  if (t.includes('recovery') || t.includes('rest')) return <Heart className="w-5 h-5 text-emerald-400" />;
-  return <Dumbbell className="w-5 h-5 text-amber-400" />;
-};
-
-function normalizeWeek(plan) {
-  // Supports: { week: [ {day, focus, details} ] } OR raw string
-  if (plan && Array.isArray(plan.week)) {
-    // Ensure 7 items with readable fields
-    return plan.week.map((d, idx) => ({
-      key: d.day || ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][idx],
-      title: d.focus || 'Session',
-      details: d.details || '',
-      type: d.type || (d.focus?.toLowerCase().includes('ride') ? 'Ride' : (d.focus?.toLowerCase().includes('mobility') ? 'Recovery' : 'Gym'))
-    }));
-  }
-  return null; // indicates text plan
+async function apiFetch(path, opts = {}) {
+  const res = await fetch(`${API}${path}`, {
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    ...opts,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+  return data;
 }
 
-// -------- Main App --------
+// ─── shared UI ───────────────────────────────────────────────────────────────
+
+function Card({ children, className }) {
+  return (
+    <div className={cn('bg-gray-900/60 border border-gray-800 rounded-xl p-4', className)}>
+      {children}
+    </div>
+  );
+}
+
+function StatCard({ icon, label, value, unit, tone = 'default' }) {
+  const tones = {
+    default: 'text-white',
+    good: 'text-emerald-400',
+    warn: 'text-amber-400',
+    bad: 'text-rose-400',
+  };
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-gray-400 uppercase tracking-wide">{label}</span>
+        {icon}
+      </div>
+      <div className={cn('text-2xl font-bold', tones[tone])}>{fmt(value)}</div>
+      {unit && <div className="text-xs text-gray-500 mt-0.5">{unit}</div>}
+    </Card>
+  );
+}
+
+function Spinner({ size = 5 }) {
+  return <Loader2 className={cn(`w-${size} h-${size}`, 'animate-spin text-sky-400')} />;
+}
+
+function ErrorBox({ message }) {
+  return (
+    <div className="flex items-start gap-3 p-4 rounded-xl border border-rose-700/50 bg-rose-900/20 text-rose-300">
+      <XCircle className="w-5 h-5 mt-0.5 shrink-0" />
+      <p className="text-sm">{message}</p>
+    </div>
+  );
+}
+
+function SectionHeader({ icon, title }) {
+  return (
+    <div className="flex items-center gap-2 mb-4">
+      {icon}
+      <h2 className="text-lg font-semibold text-white">{title}</h2>
+    </div>
+  );
+}
+
+function TabBar({ tabs, active, onChange }) {
+  return (
+    <div className="flex gap-1 bg-gray-900/70 border border-gray-800 rounded-xl p-1">
+      {tabs.map((t) => (
+        <button
+          key={t.id}
+          onClick={() => onChange(t.id)}
+          className={cn(
+            'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
+            active === t.id
+              ? 'bg-sky-600 text-white shadow'
+              : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800/60'
+          )}
+        >
+          {t.icon}
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Select({ label, value, onChange, options }) {
+  return (
+    <div>
+      <label className="block text-xs text-gray-400 mb-1">{label}</label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sky-500"
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function Input({ label, type = 'text', value, onChange, placeholder }) {
+  return (
+    <div>
+      <label className="block text-xs text-gray-400 mb-1">{label}</label>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-sky-500"
+      />
+    </div>
+  );
+}
+
+function PrimaryButton({ onClick, loading, disabled, children, className }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={loading || disabled}
+      className={cn(
+        'flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg font-semibold text-sm transition-all',
+        loading || disabled
+          ? 'bg-sky-800/50 text-sky-400 cursor-not-allowed'
+          : 'bg-sky-600 hover:bg-sky-500 text-white',
+        className
+      )}
+    >
+      {loading ? <Spinner size={4} /> : null}
+      {children}
+    </button>
+  );
+}
+
+// ─── page components (forward-declared, defined below) ───────────────────────
+
+// LoginScreen, DashboardTab, WorkoutTab, RoutesTab — defined in parts 2 & 3
+
+// ─── root App ────────────────────────────────────────────────────────────────
+
+const TABS = [
+  { id: 'dashboard', label: 'Dashboard',        icon: <Activity className="w-4 h-4" /> },
+  { id: 'workout',   label: 'Generate Workout',  icon: <Zap className="w-4 h-4" /> },
+  { id: 'routes',    label: 'Route Suggestions', icon: <Route className="w-4 h-4" /> },
+];
+
 export default function App() {
-  const [status, setStatus] = useState('Initializing…');
-  const [jobId, setJobId] = useState(null);
-  const [health, setHealth] = useState(null);
-  const [plan, setPlan] = useState(null);
-  const [error, setError] = useState(null);
-  const pollTimerRef = useRef(null);
-  const abortRef = useRef(null);
+  const [connected, setConnected]   = useState(false);
+  const [userName, setUserName]     = useState('');
+  const [activeTab, setActiveTab]   = useState('dashboard');
 
-  useEffect(() => () => {
-    if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
-    if (abortRef.current) abortRef.current.abort();
-  }, []);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        // 0) Show API for debugging
-        console.log('[API]', API_BASE_URL);
-
-        // 1) Health
-        setStatus('Fetching health…');
-        const hr = await fetch(`${API_BASE_URL}/api/health-data`, { headers: { Accept: 'application/json' }});
-        const h = await safeJson(hr);
-        if (!hr.ok) throw enrich(new Error('Failed to load health data'), h);
-        setHealth(h);
-
-        // 2) Start job
-        setStatus('Starting plan…');
-        const sr = await fetch(`${API_BASE_URL}/api/start-plan-generation`, { method: 'POST', headers: { Accept: 'application/json' }});
-        const s = await safeJson(sr);
-        if (!sr.ok) throw enrich(new Error('Failed to start plan'), s);
-        setJobId(s.jobId);
-        setStatus('Generating…');
-        pollUntilDone(s.jobId);
-      } catch (e) {
-        console.error(e);
-        setError(toDisplay(e));
-        setStatus('Failed');
-      }
-    })();
-  }, []);
-
-  function pollUntilDone(jid) {
-    if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
-    if (abortRef.current) abortRef.current.abort();
-    abortRef.current = new AbortController();
-
-    const tick = async () => {
-      try {
-        const r = await fetch(`${API_BASE_URL}/api/plan-status/${jid}`, { headers: { Accept: 'application/json' }, signal: abortRef.current.signal });
-        const body = await safeJson(r);
-        if (!r.ok && r.status !== 202) throw enrich(new Error('Status check failed'), body);
-
-        if (body.status === 'completed') {
-          const p = body?.result?.plan ?? body?.result ?? null;
-          setPlan(p);
-          setStatus('Completed');
-          return;
-        }
-        if (body.status === 'failed') throw enrich(new Error(body?.error?.message || 'Generation failed'), body?.error);
-        setStatus(body.status === 'running' ? 'Generating…' : 'Queued…');
-        pollTimerRef.current = setTimeout(tick, 2500);
-      } catch (e) {
-        console.error(e);
-        setError(toDisplay(e));
-        setStatus('Failed');
-      }
-    };
-    tick();
+  function handleLogin(name) {
+    setUserName(name);
+    setConnected(true);
   }
 
-  const week = useMemo(() => normalizeWeek(plan), [plan]);
+  function handleLogout() {
+    apiFetch('/api/garmin/disconnect', { method: 'POST' }).catch(() => {});
+    setConnected(false);
+    setUserName('');
+    setActiveTab('dashboard');
+  }
+
+  if (!connected) {
+    return <LoginScreen onLogin={handleLogin} />;
+  }
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-200">
-      <div className="max-w-6xl mx-auto px-4 py-6">
+      <div className="max-w-5xl mx-auto px-4 py-6 space-y-6">
         {/* Header */}
-        <header className="flex items-center justify-between mb-6">
+        <header className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="bg-sky-600 p-2 rounded-lg"><Bike className="w-6 h-6 text-white" /></div>
+            <div className="bg-sky-600 p-2 rounded-xl">
+              <Mountain className="w-6 h-6 text-white" />
+            </div>
             <div>
-              <h1 className="text-2xl font-bold text-white">The Uphill Athlete AI Coach</h1>
-              <p className="text-xs text-gray-400">API: <span className="font-mono">{API_BASE_URL}</span></p>
+              <h1 className="text-xl font-bold text-white">Garmin Training Coach</h1>
+              <p className="text-xs text-gray-400 flex items-center gap-1">
+                <User className="w-3 h-3" /> {userName}
+              </p>
             </div>
           </div>
-          <StatusPill status={status} />
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition"
+          >
+            <LogOut className="w-4 h-4" /> Disconnect
+          </button>
         </header>
 
-        {/* Health snapshot */}
-        <Section title="Daily Snapshot" icon={<Heart className="w-5 h-5 text-emerald-400" />} defaultOpen={true}>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatCard label="Readiness" value={health?.readiness ?? '—'} sub={health?.__stub ? 'stub' : ''} icon={<Sparkles className="w-5 h-5 text-emerald-400" />} />
-            <StatCard label="Sleep Score" value={health?.latestData?.sleepScore ?? '—'} sub="/100" icon={<BedDouble className="w-5 h-5 text-purple-400" />} />
-            <StatCard label="HRV" value={health?.latestData?.hrv ?? '—'} icon={<Activity className="w-5 h-5 text-sky-400" />} />
-            <StatCard label="Body Battery" value={health?.latestData?.bodyBattery ?? '—'} icon={<BatteryCharging className="w-5 h-5 text-lime-400" />} />
-          </div>
-        </Section>
+        {/* Tabs */}
+        <TabBar tabs={TABS} active={activeTab} onChange={setActiveTab} />
 
-        {/* Error block */}
-        {error && (
-          <div className="mt-4 p-4 rounded-xl border border-rose-700/50 bg-rose-900/20">
-            <div className="flex items-center gap-2 text-rose-300 font-semibold mb-2">
-              <XCircle className="w-5 h-5" /> Error
-            </div>
-            <pre className="text-xs whitespace-pre-wrap text-rose-200/90">{error.details || error.message}</pre>
-          </div>
-        )}
-
-        {/* Plan */}
-        <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left: Week grid */}
-          <div className="lg:col-span-2 space-y-4">
-            <Section title="This Week" icon={<Calendar className="w-5 h-5 text-sky-400" />} defaultOpen={true}>
-              {!plan && <div className="flex items-center gap-3 text-gray-300"><Loader2 className="w-5 h-5 animate-spin text-sky-400" /> Building your plan…</div>}
-
-              {week && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-                  {week.map((d, i) => (
-                    <div key={i} className="bg-gray-900/60 border border-gray-800 rounded-xl p-4 hover:border-sky-700/40 transition">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="text-sm text-sky-300 font-semibold">{d.key}</div>
-                        {iconFor(d.type)}
-                      </div>
-                      <div className="text-white font-semibold">{d.title}</div>
-                      {d.details && <p className="text-sm text-gray-300 mt-2 whitespace-pre-wrap">{d.details}</p>}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {!week && plan && (
-                <div className="bg-gray-900/50 border border-gray-800 rounded-xl p-4">
-                  <p className="text-sm text-gray-400 mb-2">AI free-form plan</p>
-                  <pre className="whitespace-pre-wrap text-gray-100 text-sm">{typeof plan === 'string' ? plan : JSON.stringify(plan, null, 2)}</pre>
-                </div>
-              )}
-            </Section>
-          </div>
-
-          {/* Right: Coach notes */}
-          <div className="space-y-4">
-            <Section title="Coach Notes" icon={<Brain className="w-5 h-5 text-amber-400" />} defaultOpen={true}>
-              <ul className="list-disc list-inside text-sm text-gray-300 space-y-2">
-                <li>Use Tuesday for intensity; anchor endurance on Sat/Sun.</li>
-                <li>Mobility every day (10–15 min). Hit hips, T-spine, ankles.</li>
-                <li>Fuel long rides: 60–90 g carbs/hr + electrolytes.</li>
-                <li>Sleep 7.5–8.5h; keep RHR trend ≤ baseline +5 bpm.</li>
-              </ul>
-            </Section>
-
-            <Section title="Today’s Focus" icon={<Timer className="w-5 h-5 text-lime-400" />} defaultOpen={true}>
-              <div className="text-sm text-gray-300">
-                <p>Follow the plan’s intent; err on the side of quality over volume. If readiness feels low, cap intensity and extend mobility.</p>
-              </div>
-            </Section>
-          </div>
-        </div>
-
-        {/* Footer */}
-        <footer className="mt-10 text-xs text-gray-500">
-          <div>Job: <span className="font-mono">{jobId || '—'}</span></div>
-        </footer>
+        {/* Content */}
+        {activeTab === 'dashboard' && <DashboardTab />}
+        {activeTab === 'workout'   && <WorkoutTab />}
+        {activeTab === 'routes'    && <RoutesTab />}
       </div>
     </div>
   );
 }
 
-// -------- UI helpers --------
-function StatusPill({ status }) {
-  if (!status) return null;
-  const lower = String(status).toLowerCase();
-  let tone = 'info'; let Icon = Loader2; let label = status;
-  if (lower.startsWith('gen') || lower.startsWith('queue') || lower === 'pending' || lower === 'running') {
-    tone = 'info'; Icon = Loader2; label = status.replace('Generating…','Generating');
-  } else if (lower.startsWith('comp')) {
-    tone = 'good'; Icon = CheckCircle2; label = 'Completed';
-  } else if (lower.startsWith('fail')) {
-    tone = 'bad'; Icon = XCircle; label = 'Failed';
+// ─── LoginScreen ─────────────────────────────────────────────────────────────
+
+function LoginScreen({ onLogin }) {
+  const [email, setEmail]       = useState('');
+  const [password, setPassword] = useState('');
+  const [mfaCode, setMfaCode]   = useState('');
+  const [mfaNeeded, setMfaNeeded] = useState(false);
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState('');
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    try {
+      const data = await apiFetch('/api/garmin/connect', {
+        method: 'POST',
+        body: JSON.stringify({ email, password }),
+      });
+      if (data.mfa_required) { setMfaNeeded(true); return; }
+      if (data.success) onLogin(data.name || email.split('@')[0]);
+      else setError(data.message || 'Login failed');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   }
-  return <Pill tone={tone}><Icon className={`w-4 h-4 ${Icon===Loader2 ? 'animate-spin' : ''}`} /> <span className="font-medium">{label}</span></Pill>;
+
+  async function handleMfa(e) {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    try {
+      const data = await apiFetch('/api/garmin/mfa', {
+        method: 'POST',
+        body: JSON.stringify({ code: mfaCode }),
+      });
+      if (data.success) onLogin(data.name || email.split('@')[0]);
+      else setError(data.message || 'MFA failed');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
+      <div className="w-full max-w-sm space-y-6">
+        <div className="text-center">
+          <div className="inline-flex items-center justify-center bg-sky-600 p-3 rounded-2xl mb-4">
+            <Mountain className="w-8 h-8 text-white" />
+          </div>
+          <h1 className="text-2xl font-bold text-white">Garmin Training Coach</h1>
+          <p className="text-sm text-gray-400 mt-1">Connect your Garmin account to get started</p>
+        </div>
+
+        <Card>
+          {!mfaNeeded ? (
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <Input label="Garmin Email" type="email" value={email} onChange={setEmail} placeholder="you@example.com" />
+              <Input label="Password" type="password" value={password} onChange={setPassword} placeholder="••••••••" />
+              {error && <ErrorBox message={error} />}
+              <PrimaryButton loading={loading} className="w-full">
+                Connect to Garmin
+              </PrimaryButton>
+            </form>
+          ) : (
+            <form onSubmit={handleMfa} className="space-y-4">
+              <p className="text-sm text-sky-300">Two-factor authentication required.</p>
+              <Input label="MFA Code" value={mfaCode} onChange={setMfaCode} placeholder="123456" />
+              {error && <ErrorBox message={error} />}
+              <PrimaryButton loading={loading} className="w-full">
+                Verify
+              </PrimaryButton>
+            </form>
+          )}
+        </Card>
+
+        <p className="text-xs text-gray-500 text-center">
+          Credentials are sent directly to Garmin and never stored.
+        </p>
+      </div>
+    </div>
+  );
 }
 
-async function safeJson(res) {
-  try { return await res.json(); }
-  catch { return { status: res.status, text: await res.text().catch(()=>'') }; }
+// ─── DashboardTab ─────────────────────────────────────────────────────────────
+
+function activityIcon(type) {
+  if (!type) return <Dumbbell className="w-4 h-4 text-gray-400" />;
+  const t = type.toLowerCase();
+  if (t.includes('run'))   return <PersonStanding className="w-4 h-4 text-amber-400" />;
+  if (t.includes('cycl') || t.includes('bike') || t.includes('ride'))
+                           return <Bike className="w-4 h-4 text-sky-400" />;
+  if (t.includes('swim'))  return <Waves className="w-4 h-4 text-blue-400" />;
+  if (t.includes('hike') || t.includes('walk'))
+                           return <Mountain className="w-4 h-4 text-emerald-400" />;
+  return <Dumbbell className="w-4 h-4 text-gray-400" />;
 }
-function enrich(err, details) { err.details = details; return err; }
-function toDisplay(e) {
-  return { message: e?.message || 'Unknown error', details: typeof e?.details === 'string' ? e.details : JSON.stringify(e?.details ?? {}, null, 2) };
+
+function secToHMS(s) {
+  if (!s) return '—';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h ${m}m` : `${m}m`;
+}
+
+function readinessTone(score) {
+  if (score == null) return 'default';
+  if (score >= 70) return 'good';
+  if (score >= 40) return 'warn';
+  return 'bad';
+}
+
+function DashboardTab() {
+  const [fitness, setFitness]         = useState(null);
+  const [activities, setActivities]   = useState([]);
+  const [loading, setLoading]         = useState(true);
+  const [error, setError]             = useState('');
+  const [showAllActs, setShowAllActs] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const [fit, acts] = await Promise.all([
+        apiFetch('/api/garmin/fitness'),
+        apiFetch('/api/garmin/activities?limit=10'),
+      ]);
+      setFitness(fit);
+      setActivities(acts.activities || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (loading) return <div className="flex justify-center py-20"><Spinner size={8} /></div>;
+  if (error)   return <ErrorBox message={error} />;
+  if (!fitness) return null;
+
+  // ── extract values ──
+  const stats       = fitness.stats        || {};
+  const hrv         = fitness.hrv          || {};
+  const sleep       = fitness.sleep        || {};
+  const readiness   = fitness.training_readiness || {};
+  const trainStatus = fitness.training_status    || {};
+  const maxM        = fitness.max_metrics  || {};
+  const body        = fitness.body_composition   || {};
+  const stress      = fitness.stress       || {};
+
+  const sleepScore = sleep?.dailySleepDTO?.sleepScores?.overall?.value;
+  const hrvVal     = hrv?.hrvSummary?.lastNight;
+  const rdScore    = readiness?.score ?? readiness?.trainingReadinessScore;
+  const battery    = stats?.bodyBatteryChargeAmount ?? stats?.bodyBattery;
+  const vo2        = maxM?.vo2MaxPreciseValue ?? maxM?.generic?.vo2MaxPreciseValue;
+  const weight     = body?.weight ? `${(body.weight / 1000).toFixed(1)} kg` : null;
+  const stressAvg  = stress?.avgStressLevel;
+
+  const tsLabel    = trainStatus?.trainingStatusFeedback?.trainingStatusFeedbackPhrase
+                  ?? trainStatus?.trainingStatus ?? null;
+
+  const visibleActs = showAllActs ? activities : activities.slice(0, 5);
+
+  return (
+    <div className="space-y-6">
+      {/* refresh */}
+      <div className="flex justify-end">
+        <button onClick={load} className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition">
+          <RefreshCw className="w-3.5 h-3.5" /> Refresh
+        </button>
+      </div>
+
+      {/* Key metrics */}
+      <section>
+        <SectionHeader icon={<Heart className="w-5 h-5 text-rose-400" />} title="Today's Health" />
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+          <StatCard label="Training Readiness" value={rdScore} unit="/100"
+            icon={<Sparkles className="w-4 h-4 text-emerald-400" />}
+            tone={readinessTone(rdScore)} />
+          <StatCard label="Sleep Score" value={sleepScore} unit="/100"
+            icon={<BedDouble className="w-4 h-4 text-purple-400" />} />
+          <StatCard label="HRV Last Night" value={hrvVal} unit="ms"
+            icon={<Activity className="w-4 h-4 text-sky-400" />} />
+          <StatCard label="Body Battery" value={battery}
+            icon={<BatteryCharging className="w-4 h-4 text-lime-400" />} />
+          <StatCard label="Steps" value={stats.totalSteps?.toLocaleString()}
+            icon={<TrendingUp className="w-4 h-4 text-amber-400" />} />
+          <StatCard label="Active Calories" value={stats.activeKilocalories} unit="kcal"
+            icon={<Flame className="w-4 h-4 text-orange-400" />} />
+          <StatCard label="Resting HR" value={stats.restingHeartRate} unit="bpm"
+            icon={<Heart className="w-4 h-4 text-rose-400" />} />
+          {vo2 && <StatCard label="VO₂ Max" value={Number(vo2).toFixed(1)} unit="ml/kg/min"
+            icon={<Zap className="w-4 h-4 text-yellow-400" />} />}
+          {weight && <StatCard label="Weight" value={weight}
+            icon={<User className="w-4 h-4 text-gray-400" />} />}
+          {stressAvg != null && <StatCard label="Avg Stress" value={stressAvg} unit="/100"
+            icon={<Brain className="w-4 h-4 text-pink-400" />} />}
+        </div>
+      </section>
+
+      {/* Training status */}
+      {tsLabel && (
+        <Card className="flex items-center gap-3">
+          <CheckCircle2 className="w-5 h-5 text-sky-400 shrink-0" />
+          <div>
+            <p className="text-xs text-gray-400 uppercase tracking-wide">Training Status</p>
+            <p className="text-sm text-white font-medium capitalize">{tsLabel.replace(/_/g, ' ').toLowerCase()}</p>
+          </div>
+        </Card>
+      )}
+
+      {/* Recent activities */}
+      <section>
+        <SectionHeader icon={<Timer className="w-5 h-5 text-sky-400" />} title="Recent Activities" />
+        {activities.length === 0 ? (
+          <p className="text-sm text-gray-500">No activities found.</p>
+        ) : (
+          <div className="space-y-2">
+            {visibleActs.map((a, i) => (
+              <Card key={a.activityId || i} className="flex items-center gap-3">
+                <div className="shrink-0">{activityIcon(a.activityType?.typeKey)}</div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-white truncate">{a.activityName || 'Activity'}</p>
+                  <p className="text-xs text-gray-400">{a.startTimeLocal?.slice(0, 10) || '—'}</p>
+                </div>
+                <div className="text-right text-xs text-gray-300 shrink-0 space-y-0.5">
+                  <div>{a.distance ? `${(a.distance / 1000).toFixed(2)} km` : ''}</div>
+                  <div>{secToHMS(a.duration)}</div>
+                  {a.averageHR && <div>{a.averageHR} bpm</div>}
+                </div>
+              </Card>
+            ))}
+            {activities.length > 5 && (
+              <button
+                onClick={() => setShowAllActs(!showAllActs)}
+                className="flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300 transition"
+              >
+                {showAllActs ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                {showAllActs ? 'Show less' : `Show all ${activities.length}`}
+              </button>
+            )}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// ─── WorkoutTab ───────────────────────────────────────────────────────────────
+
+const WORKOUT_TYPES = [
+  { value: 'run',      label: 'Run' },
+  { value: 'cycle',    label: 'Cycle' },
+  { value: 'strength', label: 'Strength' },
+  { value: 'swim',     label: 'Swim' },
+  { value: 'hike',     label: 'Hike' },
+];
+const GOALS = [
+  { value: 'endurance',    label: 'Build Endurance' },
+  { value: 'speed',        label: 'Improve Speed' },
+  { value: 'strength',     label: 'Build Strength' },
+  { value: 'recovery',     label: 'Active Recovery' },
+  { value: 'weight_loss',  label: 'Weight Loss' },
+];
+const INTENSITIES = [
+  { value: 'easy',      label: 'Easy' },
+  { value: 'moderate',  label: 'Moderate' },
+  { value: 'hard',      label: 'Hard' },
+  { value: 'intervals', label: 'Intervals' },
+];
+
+function HRZoneBadge({ zone }) {
+  if (!zone) return null;
+  const z = String(zone).toLowerCase();
+  const color = z.includes('1') ? 'text-blue-300 bg-blue-900/30 border-blue-700/40'
+    : z.includes('2') ? 'text-emerald-300 bg-emerald-900/30 border-emerald-700/40'
+    : z.includes('3') ? 'text-yellow-300 bg-yellow-900/30 border-yellow-700/40'
+    : z.includes('4') ? 'text-orange-300 bg-orange-900/30 border-orange-700/40'
+    : 'text-rose-300 bg-rose-900/30 border-rose-700/40';
+  return (
+    <span className={cn('text-xs px-2 py-0.5 rounded-full border', color)}>{zone}</span>
+  );
+}
+
+function WorkoutBlock({ block, index }) {
+  const [open, setOpen] = useState(index === 0);
+  return (
+    <div className="border border-gray-700/60 rounded-lg overflow-hidden">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-4 py-3 bg-gray-800/50 hover:bg-gray-800 transition text-left"
+      >
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-400 font-mono w-5">{index + 1}.</span>
+          <span className="text-sm font-medium text-white">{block.name}</span>
+          {block.target_hr_zone && <HRZoneBadge zone={block.target_hr_zone} />}
+        </div>
+        <div className="flex items-center gap-3 shrink-0">
+          {block.duration_min && (
+            <span className="text-xs text-gray-400">{block.duration_min} min</span>
+          )}
+          {open ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+        </div>
+      </button>
+      {open && (
+        <div className="px-4 py-3 bg-gray-900/40 text-sm text-gray-300 space-y-1">
+          <p>{block.instructions}</p>
+          {block.reps && <p className="text-xs text-gray-400">Reps: {block.reps}</p>}
+          {block.rest_min && <p className="text-xs text-gray-400">Rest: {block.rest_min} min</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WorkoutDisplay({ workout }) {
+  if (workout.raw) {
+    return (
+      <Card>
+        <pre className="text-sm text-gray-200 whitespace-pre-wrap">{workout.raw}</pre>
+      </Card>
+    );
+  }
+  const metrics = workout.target_metrics || {};
+  return (
+    <div className="space-y-4">
+      {/* Title bar */}
+      <Card className="flex items-start justify-between gap-4">
+        <div>
+          <h3 className="text-lg font-bold text-white">{workout.title}</h3>
+          <div className="flex flex-wrap items-center gap-2 mt-1">
+            <span className="text-xs text-gray-400">{workout.total_duration_min} min</span>
+            {workout.estimated_calories && (
+              <span className="text-xs text-gray-400">~{workout.estimated_calories} kcal</span>
+            )}
+            {metrics.rpe && <span className="text-xs text-gray-400">RPE {metrics.rpe}</span>}
+          </div>
+        </div>
+        <div className="text-right text-xs space-y-1">
+          {metrics.hr_zone && <div><HRZoneBadge zone={metrics.hr_zone} /></div>}
+          {metrics.pace_per_km && <div className="text-gray-400">Pace {metrics.pace_per_km}/km</div>}
+          {metrics.cadence_rpm && <div className="text-gray-400">{metrics.cadence_rpm} rpm</div>}
+          {metrics.power_watts && <div className="text-gray-400">{metrics.power_watts} W</div>}
+        </div>
+      </Card>
+
+      {/* Warmup */}
+      {workout.warmup && (
+        <div>
+          <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Warm-up · {workout.warmup.duration_min} min</p>
+          <Card><p className="text-sm text-gray-200">{workout.warmup.description}</p></Card>
+        </div>
+      )}
+
+      {/* Main set */}
+      {workout.main_set?.length > 0 && (
+        <div>
+          <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Main Set</p>
+          <div className="space-y-1.5">
+            {workout.main_set.map((b, i) => <WorkoutBlock key={i} block={b} index={i} />)}
+          </div>
+        </div>
+      )}
+
+      {/* Cooldown */}
+      {workout.cooldown && (
+        <div>
+          <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Cool-down · {workout.cooldown.duration_min} min</p>
+          <Card><p className="text-sm text-gray-200">{workout.cooldown.description}</p></Card>
+        </div>
+      )}
+
+      {/* Tips + adaptations */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {workout.tips?.length > 0 && (
+          <Card>
+            <p className="text-xs text-gray-400 uppercase tracking-wide mb-2">Coach Tips</p>
+            <ul className="space-y-1">
+              {workout.tips.map((t, i) => (
+                <li key={i} className="text-sm text-gray-200 flex gap-2"><span className="text-sky-400">•</span>{t}</li>
+              ))}
+            </ul>
+          </Card>
+        )}
+        {workout.adaptations && (
+          <Card>
+            <p className="text-xs text-gray-400 uppercase tracking-wide mb-2">Adaptations</p>
+            {workout.adaptations.if_feeling_good && (
+              <p className="text-xs text-emerald-300 mb-1"><span className="font-semibold">Feeling good:</span> {workout.adaptations.if_feeling_good}</p>
+            )}
+            {workout.adaptations.if_tired && (
+              <p className="text-xs text-amber-300"><span className="font-semibold">Feeling tired:</span> {workout.adaptations.if_tired}</p>
+            )}
+          </Card>
+        )}
+      </div>
+
+      {/* Equipment */}
+      {workout.equipment?.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {workout.equipment.map((e, i) => (
+            <span key={i} className="text-xs px-2.5 py-1 rounded-full bg-gray-800 border border-gray-700 text-gray-300">{e}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WorkoutTab() {
+  const [form, setForm] = useState({
+    workout_type: 'run', duration_minutes: 45,
+    fitness_goal: 'endurance', intensity: 'moderate',
+  });
+  const [workout, setWorkout]   = useState(null);
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState('');
+
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+
+  async function generate() {
+    setLoading(true); setError(''); setWorkout(null);
+    try {
+      const data = await apiFetch('/api/garmin/generate-workout', {
+        method: 'POST',
+        body: JSON.stringify({ ...form, duration_minutes: Number(form.duration_minutes) }),
+      });
+      setWorkout(data.workout);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <SectionHeader icon={<Zap className="w-5 h-5 text-yellow-400" />} title="AI Workout Generator" />
+
+      <Card>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+          <Select label="Type"      value={form.workout_type}     onChange={set('workout_type')}     options={WORKOUT_TYPES} />
+          <Select label="Goal"      value={form.fitness_goal}     onChange={set('fitness_goal')}     options={GOALS} />
+          <Select label="Intensity" value={form.intensity}        onChange={set('intensity')}        options={INTENSITIES} />
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Duration (min)</label>
+            <input
+              type="number" min={10} max={300} step={5}
+              value={form.duration_minutes}
+              onChange={(e) => set('duration_minutes')(e.target.value)}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sky-500"
+            />
+          </div>
+        </div>
+        <PrimaryButton onClick={generate} loading={loading}>
+          <Sparkles className="w-4 h-4" /> Generate Workout
+        </PrimaryButton>
+      </Card>
+
+      {error  && <ErrorBox message={error} />}
+      {loading && (
+        <div className="flex items-center gap-3 text-gray-300 py-6">
+          <Spinner /> Generating your personalized workout…
+        </div>
+      )}
+      {workout && !loading && <WorkoutDisplay workout={workout} />}
+    </div>
+  );
+}
+
+// ─── RoutesTab ────────────────────────────────────────────────────────────────
+
+const TERRAINS = [
+  { value: 'any',   label: 'Any' },
+  { value: 'road',  label: 'Road' },
+  { value: 'trail', label: 'Trail' },
+  { value: 'mixed', label: 'Mixed' },
+];
+
+const DIFFICULTY_COLOR = {
+  easy:     'text-emerald-300 border-emerald-700/50 bg-emerald-900/20',
+  moderate: 'text-yellow-300  border-yellow-700/50  bg-yellow-900/20',
+  hard:     'text-rose-300    border-rose-700/50    bg-rose-900/20',
+};
+
+function RouteCard({ route }) {
+  const [open, setOpen] = useState(false);
+  const diffColor = DIFFICULTY_COLOR[route.difficulty?.toLowerCase()] || DIFFICULTY_COLOR.moderate;
+  const mapsUrl = route.google_maps_search
+    ? `https://www.google.com/maps/search/${encodeURIComponent(route.google_maps_search)}`
+    : null;
+
+  return (
+    <Card>
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-wrap items-center gap-2 mb-1">
+            <h3 className="text-base font-bold text-white">{route.name}</h3>
+            <span className={cn('text-xs px-2 py-0.5 rounded-full border capitalize', diffColor)}>
+              {route.difficulty}
+            </span>
+          </div>
+          <p className="text-sm text-gray-300">{route.description}</p>
+        </div>
+        <Navigation className="w-5 h-5 text-sky-400 shrink-0 mt-0.5" />
+      </div>
+
+      {/* Stats row */}
+      <div className="flex flex-wrap gap-4 text-xs text-gray-400 mb-3">
+        <span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5" />{route.distance_km} km</span>
+        <span className="flex items-center gap-1"><Mountain className="w-3.5 h-3.5" />+{route.elevation_gain_m}m</span>
+        <span className="flex items-center gap-1"><Timer className="w-3.5 h-3.5" />{route.estimated_duration_min} min</span>
+        {route.surface && <span className="capitalize">{route.surface}</span>}
+      </div>
+
+      <p className="text-xs text-emerald-300 mb-3">{route.why_good}</p>
+
+      {/* Start point */}
+      <p className="text-xs text-gray-400 mb-3">
+        <span className="text-gray-500">Start:</span> {route.start_point}
+      </p>
+
+      {/* Expandable details */}
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300 transition mb-2"
+      >
+        {open ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+        {open ? 'Less detail' : 'More detail'}
+      </button>
+
+      {open && (
+        <div className="space-y-3 pt-1 border-t border-gray-800">
+          {route.navigation_summary?.length > 0 && (
+            <div>
+              <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Navigation</p>
+              <ol className="space-y-0.5">
+                {route.navigation_summary.map((step, i) => (
+                  <li key={i} className="text-xs text-gray-200 flex gap-2">
+                    <span className="text-sky-500 font-mono shrink-0">{i + 1}.</span>{step}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
+          {route.landmarks?.length > 0 && (
+            <div>
+              <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Landmarks</p>
+              <div className="flex flex-wrap gap-1.5">
+                {route.landmarks.map((l, i) => (
+                  <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-gray-800 border border-gray-700 text-gray-300">{l}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {(route.pros?.length > 0 || route.cons?.length > 0) && (
+            <div className="grid grid-cols-2 gap-3">
+              {route.pros?.length > 0 && (
+                <div>
+                  <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Pros</p>
+                  {route.pros.map((p, i) => <p key={i} className="text-xs text-emerald-300">+ {p}</p>)}
+                </div>
+              )}
+              {route.cons?.length > 0 && (
+                <div>
+                  <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Cons</p>
+                  {route.cons.map((c, i) => <p key={i} className="text-xs text-rose-300">- {c}</p>)}
+                </div>
+              )}
+            </div>
+          )}
+
+          {route.parking && (
+            <p className="text-xs text-gray-400"><span className="text-gray-500">Parking:</span> {route.parking}</p>
+          )}
+          {route.best_time && (
+            <p className="text-xs text-gray-400"><span className="text-gray-500">Best time:</span> {route.best_time}</p>
+          )}
+          {route.surface_breakdown && (
+            <p className="text-xs text-gray-400"><span className="text-gray-500">Surface:</span> {route.surface_breakdown}</p>
+          )}
+          {route.strava_segment && (
+            <p className="text-xs text-gray-400"><span className="text-gray-500">Strava segment:</span> {route.strava_segment}</p>
+          )}
+        </div>
+      )}
+
+      {/* Actions */}
+      {mapsUrl && (
+        <div className="mt-3 pt-3 border-t border-gray-800">
+          <a
+            href={mapsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-xs text-sky-400 hover:text-sky-300 transition"
+          >
+            <MapPin className="w-3.5 h-3.5" /> Open in Google Maps
+          </a>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function RoutesTab() {
+  const [form, setForm] = useState({
+    location: '', workout_type: 'run',
+    duration_minutes: 45, terrain_preference: 'any',
+  });
+  const [result, setResult]   = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError]     = useState('');
+
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+
+  async function findRoutes() {
+    if (!form.location.trim()) { setError('Please enter a location.'); return; }
+    setLoading(true); setError(''); setResult(null);
+    try {
+      const data = await apiFetch('/api/garmin/suggest-route', {
+        method: 'POST',
+        body: JSON.stringify({ ...form, duration_minutes: Number(form.duration_minutes) }),
+      });
+      setResult(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <SectionHeader icon={<Route className="w-5 h-5 text-emerald-400" />} title="Route Suggestions" />
+
+      <Card>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+          <div className="col-span-2">
+            <Input label="Location" value={form.location} onChange={set('location')}
+              placeholder="e.g. Central Park, New York" />
+          </div>
+          <Select label="Activity"  value={form.workout_type}       onChange={set('workout_type')}       options={WORKOUT_TYPES} />
+          <Select label="Terrain"   value={form.terrain_preference} onChange={set('terrain_preference')} options={TERRAINS} />
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Duration (min)</label>
+            <input
+              type="number" min={10} max={300} step={5}
+              value={form.duration_minutes}
+              onChange={(e) => set('duration_minutes')(e.target.value)}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sky-500"
+            />
+          </div>
+        </div>
+        <PrimaryButton onClick={findRoutes} loading={loading}>
+          <Navigation className="w-4 h-4" /> Find Routes
+        </PrimaryButton>
+      </Card>
+
+      {error && <ErrorBox message={error} />}
+      {loading && (
+        <div className="flex items-center gap-3 text-gray-300 py-6">
+          <Spinner /> Finding routes near {form.location}…
+        </div>
+      )}
+
+      {result && !loading && (
+        <div className="space-y-4">
+          <p className="text-sm text-gray-400">
+            Routes near <span className="text-white font-medium">{result.location}</span>
+          </p>
+
+          {result.routes?.map((r, i) => <RouteCard key={i} route={r} />)}
+
+          {result.local_tips?.length > 0 && (
+            <Card>
+              <p className="text-xs text-gray-400 uppercase tracking-wide mb-2">Local Tips</p>
+              <ul className="space-y-1">
+                {result.local_tips.map((t, i) => (
+                  <li key={i} className="text-sm text-gray-200 flex gap-2">
+                    <span className="text-emerald-400">•</span>{t}
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
