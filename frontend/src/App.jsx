@@ -155,9 +155,10 @@ function PrimaryButton({ onClick, loading, disabled, children, className }) {
 // ─── root App ────────────────────────────────────────────────────────────────
 
 const TABS = [
-  { id: 'dashboard', label: 'Dashboard',        icon: <Activity className="w-4 h-4" /> },
-  { id: 'workout',   label: 'Generate Workout',  icon: <Zap className="w-4 h-4" /> },
-  { id: 'routes',    label: 'Route Suggestions', icon: <Route className="w-4 h-4" /> },
+  { id: 'dashboard',   label: 'Dashboard',   icon: <Activity className="w-4 h-4" /> },
+  { id: 'performance', label: 'Performance', icon: <TrendingUp className="w-4 h-4" /> },
+  { id: 'workout',     label: 'Workout',     icon: <Zap className="w-4 h-4" /> },
+  { id: 'routes',      label: 'Routes',      icon: <Route className="w-4 h-4" /> },
 ];
 
 export default function App() {
@@ -209,9 +210,10 @@ export default function App() {
         <TabBar tabs={TABS} active={activeTab} onChange={setActiveTab} />
 
         {/* Content */}
-        {activeTab === 'dashboard' && <DashboardTab />}
-        {activeTab === 'workout'   && <WorkoutTab />}
-        {activeTab === 'routes'    && <RoutesTab />}
+        {activeTab === 'dashboard'   && <DashboardTab />}
+        {activeTab === 'performance' && <PerformanceTab />}
+        {activeTab === 'workout'     && <WorkoutTab />}
+        {activeTab === 'routes'      && <RoutesTab />}
       </div>
     </div>
   );
@@ -542,50 +544,6 @@ const INTENSITIES = [
   { value: 'hard',      label: 'Hard' },
 ];
 
-function HRZoneBadge({ zone }) {
-  if (!zone) return null;
-  const z = String(zone).toLowerCase();
-  const color = z.includes('1') ? 'text-blue-300 bg-blue-900/30 border-blue-700/40'
-    : z.includes('2') ? 'text-emerald-300 bg-emerald-900/30 border-emerald-700/40'
-    : z.includes('3') ? 'text-yellow-300 bg-yellow-900/30 border-yellow-700/40'
-    : z.includes('4') ? 'text-orange-300 bg-orange-900/30 border-orange-700/40'
-    : 'text-rose-300 bg-rose-900/30 border-rose-700/40';
-  return (
-    <span className={cn('text-xs px-2 py-0.5 rounded-full border', color)}>{zone}</span>
-  );
-}
-
-function WorkoutBlock({ block, index }) {
-  const [open, setOpen] = useState(index === 0);
-  return (
-    <div className="border border-gray-700/60 rounded-lg overflow-hidden">
-      <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center justify-between px-4 py-3 bg-gray-800/50 hover:bg-gray-800 transition text-left"
-      >
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-gray-400 font-mono w-5">{index + 1}.</span>
-          <span className="text-sm font-medium text-white">{block.name}</span>
-          {block.target_hr_zone && <HRZoneBadge zone={block.target_hr_zone} />}
-        </div>
-        <div className="flex items-center gap-3 shrink-0">
-          {block.duration_min && (
-            <span className="text-xs text-gray-400">{block.duration_min} min</span>
-          )}
-          {open ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
-        </div>
-      </button>
-      {open && (
-        <div className="px-4 py-3 bg-gray-900/40 text-sm text-gray-300 space-y-1">
-          <p>{block.instructions}</p>
-          {block.reps && <p className="text-xs text-gray-400">Reps: {block.reps}</p>}
-          {block.rest_min && <p className="text-xs text-gray-400">Rest: {block.rest_min} min</p>}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ─── WOD Display ─────────────────────────────────────────────────────────────
 
 function ScalingTier({ label, color, data }) {
@@ -835,6 +793,268 @@ function WorkoutTab() {
         </div>
       )}
       {workout && !loading && <WodDisplay workout={workout} />}
+    </div>
+  );
+}
+
+// ─── Performance Tab (PMC / TrainingPeaks-style) ─────────────────────────────
+
+const FORM_CONFIG = {
+  peak:       { label: 'Peak',       color: 'text-purple-400', bg: 'bg-purple-900/30 border-purple-700/40', tip: 'Primed for performance. Race or test today.' },
+  fresh:      { label: 'Fresh',      color: 'text-emerald-400', bg: 'bg-emerald-900/30 border-emerald-700/40', tip: 'Well recovered. Good day to push hard.' },
+  neutral:    { label: 'Neutral',    color: 'text-sky-400', bg: 'bg-sky-900/30 border-sky-700/40', tip: 'Balanced load. Normal training day.' },
+  tired:      { label: 'Tired',      color: 'text-amber-400', bg: 'bg-amber-900/30 border-amber-700/40', tip: 'Accumulated fatigue. Keep intensity moderate.' },
+  'very tired': { label: 'Very Tired', color: 'text-rose-400', bg: 'bg-rose-900/30 border-rose-700/40', tip: 'High fatigue. Prioritise recovery today.' },
+};
+
+function PmcChart({ data }) {
+  const [hover, setHover] = useState(null);
+  if (!data || data.length === 0) return null;
+
+  // Use last 60 days for display
+  const display = data.slice(-60);
+  const W = 600, H = 200;
+  const pad = { t: 12, r: 8, b: 28, l: 36 };
+  const iw = W - pad.l - pad.r;
+  const ih = H - pad.t - pad.b;
+
+  const ctlVals = display.map(d => d.ctl);
+  const atlVals = display.map(d => d.atl);
+  const tsbVals = display.map(d => d.tsb);
+  const tssVals = display.map(d => d.tss);
+
+  const yMin = Math.min(...tsbVals) - 5;
+  const yMax = Math.max(...ctlVals, ...atlVals) + 8;
+  const tssMax = Math.max(...tssVals, 1);
+
+  const xp = (i) => pad.l + (i / (display.length - 1 || 1)) * iw;
+  const yp = (v) => pad.t + (1 - (v - yMin) / (yMax - yMin)) * ih;
+  const zero = yp(0);
+
+  const line = (key) => display.map((d, i) => `${i === 0 ? 'M' : 'L'}${xp(i).toFixed(1)},${yp(d[key]).toFixed(1)}`).join(' ');
+
+  // X-axis tick labels (every ~2 weeks)
+  const tickStep = Math.max(1, Math.floor(display.length / 6));
+  const ticks = display.filter((_, i) => i % tickStep === 0 || i === display.length - 1);
+
+  // Y-axis ticks
+  const yRange = yMax - yMin;
+  const yTickStep = yRange > 60 ? 20 : yRange > 30 ? 10 : 5;
+  const yStart = Math.ceil(yMin / yTickStep) * yTickStep;
+  const yTicks = [];
+  for (let v = yStart; v <= yMax; v += yTickStep) yTicks.push(v);
+
+  return (
+    <div className="relative">
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="w-full"
+        onMouseLeave={() => setHover(null)}
+      >
+        {/* Y gridlines */}
+        {yTicks.map(v => (
+          <g key={v}>
+            <line x1={pad.l} y1={yp(v)} x2={W - pad.r} y2={yp(v)}
+              stroke={v === 0 ? '#6b7280' : '#374151'} strokeWidth={v === 0 ? 1 : 0.5} strokeDasharray={v === 0 ? '' : '3,3'} />
+            <text x={pad.l - 4} y={yp(v) + 4} textAnchor="end" fontSize={8} fill="#9ca3af">{v}</text>
+          </g>
+        ))}
+
+        {/* TSS bars */}
+        {display.map((d, i) => {
+          if (!d.tss) return null;
+          const bh = Math.max(1, (d.tss / tssMax) * (ih * 0.35));
+          const bw = Math.max(1, iw / display.length - 1);
+          return (
+            <rect key={i}
+              x={xp(i) - bw / 2} y={zero - bh} width={bw} height={bh}
+              fill="#1d4ed8" opacity={0.35}
+              onMouseEnter={() => setHover({ ...d, x: xp(i), y: yp(d.ctl) })}
+            />
+          );
+        })}
+
+        {/* CTL (Fitness) */}
+        <path d={line('ctl')} fill="none" stroke="#38bdf8" strokeWidth={2} strokeLinejoin="round" />
+        {/* ATL (Fatigue) */}
+        <path d={line('atl')} fill="none" stroke="#fb923c" strokeWidth={2} strokeLinejoin="round" />
+        {/* TSB (Form) */}
+        <path d={line('tsb')} fill="none" stroke="#4ade80" strokeWidth={1.5} strokeDasharray="4,2" strokeLinejoin="round" />
+
+        {/* X-axis labels */}
+        {ticks.map((d, i) => (
+          <text key={i} x={xp(display.indexOf(d))} y={H - 4}
+            textAnchor="middle" fontSize={7.5} fill="#6b7280">
+            {d.date.slice(5)}
+          </text>
+        ))}
+
+        {/* Hover crosshair */}
+        {hover && (
+          <line x1={hover.x} y1={pad.t} x2={hover.x} y2={H - pad.b}
+            stroke="#6b7280" strokeWidth={1} strokeDasharray="3,3" />
+        )}
+      </svg>
+
+      {/* Legend */}
+      <div className="flex gap-4 mt-1 text-xs text-gray-400">
+        <span className="flex items-center gap-1"><span className="w-4 h-0.5 bg-sky-400 inline-block" /> CTL (Fitness)</span>
+        <span className="flex items-center gap-1"><span className="w-4 h-0.5 bg-orange-400 inline-block" /> ATL (Fatigue)</span>
+        <span className="flex items-center gap-1"><span className="w-4 h-0.5 bg-emerald-400 inline-block border-dashed" /> TSB (Form)</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-2.5 bg-blue-700/50 inline-block" /> TSS</span>
+      </div>
+
+      {/* Tooltip */}
+      {hover && (
+        <div className="absolute top-0 left-4 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs pointer-events-none">
+          <p className="font-semibold text-white mb-1">{hover.date}</p>
+          <p className="text-sky-400">CTL {hover.ctl}</p>
+          <p className="text-orange-400">ATL {hover.atl}</p>
+          <p className="text-emerald-400">TSB {hover.tsb}</p>
+          {hover.tss > 0 && <p className="text-blue-300">TSS {hover.tss}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TrainingCalendar({ data }) {
+  // Show a 6-week rolling calendar
+  if (!data || data.length === 0) return null;
+
+  const today = new Date();
+  // Start from 5 weeks ago Monday
+  const startDay = new Date(today);
+  startDay.setDate(startDay.getDate() - startDay.getDay() + 1 - 35); // 5 weeks back, Monday
+
+  const weeks = [];
+  let cur = new Date(startDay);
+  for (let w = 0; w < 6; w++) {
+    const week = [];
+    for (let d = 0; d < 7; d++) {
+      week.push(new Date(cur));
+      cur.setDate(cur.getDate() + 1);
+    }
+    weeks.push(week);
+  }
+
+  const byDate = {};
+  data.forEach(d => { byDate[d.date] = d; });
+
+  function tssColor(tss) {
+    if (!tss || tss === 0) return 'bg-gray-800/40';
+    if (tss < 40)  return 'bg-blue-900/60';
+    if (tss < 80)  return 'bg-sky-700/70';
+    if (tss < 120) return 'bg-sky-500/80';
+    return 'bg-sky-400';
+  }
+
+  const dayLabels = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+
+  return (
+    <div>
+      <div className="grid grid-cols-7 gap-0.5 mb-0.5">
+        {dayLabels.map(d => (
+          <div key={d} className="text-center text-xs text-gray-500 py-1">{d}</div>
+        ))}
+      </div>
+      {weeks.map((week, wi) => (
+        <div key={wi} className="grid grid-cols-7 gap-0.5 mb-0.5">
+          {week.map((day, di) => {
+            const ds = day.toISOString().slice(0, 10);
+            const entry = byDate[ds];
+            const tss = entry?.tss || 0;
+            const acts = entry?.activities || [];
+            const isToday = ds === today.toISOString().slice(0, 10);
+            const isFuture = day > today;
+            return (
+              <div key={di} title={acts.map(a => `${a.name} (TSS ${a.tss})`).join('\n') || ds}
+                className={cn(
+                  'rounded p-1 min-h-[44px] flex flex-col',
+                  isFuture ? 'bg-gray-900/20' : tssColor(tss),
+                  isToday && 'ring-1 ring-white/50'
+                )}>
+                <span className={cn('text-xs leading-none', isToday ? 'text-white font-bold' : 'text-gray-400')}>
+                  {day.getDate()}
+                </span>
+                {tss > 0 && !isFuture && (
+                  <span className="text-xs text-white/80 font-medium mt-auto">{Math.round(tss)}</span>
+                )}
+                {acts.length > 1 && (
+                  <span className="text-xs text-white/50">+{acts.length}</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+      <p className="text-xs text-gray-500 mt-1">Numbers = TSS · Darker blue = higher load</p>
+    </div>
+  );
+}
+
+function PerformanceTab() {
+  const [pmc, setPmc]       = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]   = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true); setError('');
+    try {
+      const data = await apiFetch('/api/garmin/pmc?days=90');
+      setPmc(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (loading) return <div className="flex justify-center py-20"><Spinner size={8} /></div>;
+  if (error)   return <ErrorBox message={error} />;
+  if (!pmc)    return null;
+
+  const cur = pmc.current || {};
+  const form = FORM_CONFIG[cur.form] || FORM_CONFIG.neutral;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <SectionHeader icon={<TrendingUp className="w-5 h-5 text-sky-400" />} title="Performance" />
+        <button onClick={load} className="text-xs text-gray-400 hover:text-white flex items-center gap-1">
+          <RefreshCw className="w-3.5 h-3.5" /> Refresh
+        </button>
+      </div>
+
+      {/* CTL / ATL / TSB summary */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <StatCard label="Fitness (CTL)" value={cur.ctl} unit="42-day avg"
+          icon={<TrendingUp className="w-4 h-4 text-sky-400" />} />
+        <StatCard label="Fatigue (ATL)" value={cur.atl} unit="7-day avg"
+          icon={<Flame className="w-4 h-4 text-orange-400" />} />
+        <StatCard label="Form (TSB)" value={cur.tsb}
+          icon={<Zap className="w-4 h-4 text-emerald-400" />}
+          tone={cur.tsb > 5 ? 'good' : cur.tsb < -20 ? 'bad' : 'warn'} />
+        <Card className={cn('border', form.bg)}>
+          <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Today's Form</p>
+          <p className={cn('text-xl font-bold', form.color)}>{form.label}</p>
+          <p className="text-xs text-gray-300 mt-1">{form.tip}</p>
+        </Card>
+      </div>
+
+      {/* PMC Chart */}
+      <Card>
+        <p className="text-xs text-gray-400 uppercase tracking-wide mb-3">Performance Management Chart · Last 60 Days</p>
+        <PmcChart data={pmc.pmc} />
+      </Card>
+
+      {/* Training Calendar */}
+      <Card>
+        <p className="text-xs text-gray-400 uppercase tracking-wide mb-3">Training Calendar</p>
+        <TrainingCalendar data={pmc.pmc} />
+      </Card>
     </div>
   );
 }

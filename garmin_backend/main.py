@@ -473,6 +473,118 @@ Suggest 3 specific, realistic routes near this location using your knowledge of 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+# Routes – Performance Management Chart (TrainingPeaks-style)
+# ---------------------------------------------------------------------------
+
+def _estimate_tss(activity: dict) -> float:
+    """
+    Estimate TSS (Training Stress Score) for an activity.
+    Uses activityTrainingLoad when available; falls back to
+    duration × (avg_hr / threshold_hr)² × 100.
+    """
+    # Garmin's own training load is the best proxy
+    tl = activity.get("activityTrainingLoad")
+    if tl and tl > 0:
+        return float(tl)
+    # HR-based estimate (rough)
+    duration_h = (activity.get("duration") or 0) / 3600
+    avg_hr = activity.get("averageHR") or 0
+    threshold_hr = 160  # assumed; could be parameterised later
+    if avg_hr > 0 and duration_h > 0:
+        ratio = min(avg_hr / threshold_hr, 1.15)
+        return round(duration_h * ratio * ratio * 100, 1)
+    return 0.0
+
+
+@app.get("/api/garmin/pmc")
+async def get_pmc(days: int = 90):
+    """
+    Return daily TSS, CTL (42-day EMA), ATL (7-day EMA), and TSB for the
+    last `days` days — the core Performance Management Chart data.
+    """
+    if not _garmin:
+        raise HTTPException(status_code=401, detail="Not connected to Garmin")
+
+    # Fetch enough activities to cover the window (200 is generous)
+    activities = safe_call(_garmin.get_activities, 0, 200) or []
+
+    today = date.today()
+    window_start = today - timedelta(days=days)
+
+    # Build date → total TSS map
+    daily_tss: dict[str, float] = {}
+    act_by_date: dict[str, list] = {}
+
+    for act in activities:
+        date_str = (act.get("startTimeLocal") or "")[:10]
+        if not date_str:
+            continue
+        try:
+            act_date = date.fromisoformat(date_str)
+        except ValueError:
+            continue
+        if act_date < window_start:
+            continue
+        tss = _estimate_tss(act)
+        daily_tss[date_str] = daily_tss.get(date_str, 0.0) + tss
+        act_by_date.setdefault(date_str, []).append({
+            "name": act.get("activityName", "Activity"),
+            "type": act.get("activityType", {}).get("typeKey", ""),
+            "distance_km": round((act.get("distance") or 0) / 1000, 2),
+            "duration_min": round((act.get("duration") or 0) / 60),
+            "avg_hr": act.get("averageHR"),
+            "tss": round(_estimate_tss(act), 1),
+        })
+
+    # Walk day-by-day to compute CTL/ATL/TSB with exponential moving averages.
+    # Seed with 0; a more accurate implementation would walk back further, but
+    # 90 days of data is enough for meaningful trends.
+    ctl = 0.0
+    atl = 0.0
+    pmc = []
+
+    current = window_start
+    while current <= today:
+        ds = current.isoformat()
+        tss = daily_tss.get(ds, 0.0)
+        ctl = ctl * (1 - 1 / 42) + tss * (1 / 42)
+        atl = atl * (1 - 1 / 7)  + tss * (1 / 7)
+        tsb = ctl - atl
+        pmc.append({
+            "date": ds,
+            "tss": round(tss, 1),
+            "ctl": round(ctl, 1),
+            "atl": round(atl, 1),
+            "tsb": round(tsb, 1),
+            "activities": act_by_date.get(ds, []),
+        })
+        current += timedelta(days=1)
+
+    last = pmc[-1] if pmc else {}
+    ctl_now = last.get("ctl", 0)
+    atl_now = last.get("atl", 0)
+    tsb_now = last.get("tsb", 0)
+
+    form = (
+        "peak"    if tsb_now >  15 else
+        "fresh"   if tsb_now >   5 else
+        "neutral" if tsb_now >  -5 else
+        "tired"   if tsb_now > -25 else
+        "very tired"
+    )
+
+    return {
+        "pmc": pmc,
+        "current": {
+            "ctl": round(ctl_now, 1),
+            "atl": round(atl_now, 1),
+            "tsb": round(tsb_now, 1),
+            "form": form,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Routes – Notion WOD
 # ---------------------------------------------------------------------------
 
