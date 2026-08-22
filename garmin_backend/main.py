@@ -96,11 +96,30 @@ _garmin_error  = ""
 
 
 def _auto_connect():
-    """Auto-connect at startup. Tries saved tokens first, then credentials."""
+    """Auto-connect at startup. Tries GARTH_TOKENS env var first, then saved tokens, then credentials."""
     global _garmin, _garmin_status, _garmin_error
     _garmin_status = "connecting"
 
-    # 1. Try loading saved tokens (avoids hitting Garmin SSO on every restart)
+    # 1. Try GARTH_TOKENS env var (base64 JSON of token files — most reliable across restarts)
+    token_b64 = os.environ.get("GARTH_TOKENS", "")
+    if token_b64:
+        try:
+            files = json.loads(base64.b64decode(token_b64).decode())
+            os.makedirs(GARTH_HOME, exist_ok=True)
+            for fname, content in files.items():
+                with open(os.path.join(GARTH_HOME, fname), "w") as f:
+                    f.write(content)
+            client = Garmin()
+            client.login(GARTH_HOME)
+            with _garmin_lock:
+                _garmin = client
+            _garmin_status = "connected"
+            print("[INFO] Loaded Garmin tokens from GARTH_TOKENS env var")
+            return
+        except Exception as exc:
+            print(f"[WARN] GARTH_TOKENS failed ({exc}), trying other methods")
+
+    # 2. Try loading saved tokens from disk (avoids hitting Garmin SSO on every restart)
     try:
         if os.path.isdir(GARTH_HOME) and os.listdir(GARTH_HOME):
             client = Garmin()
@@ -108,7 +127,7 @@ def _auto_connect():
             with _garmin_lock:
                 _garmin = client
             _garmin_status = "connected"
-            print("[INFO] Loaded saved Garmin tokens")
+            print("[INFO] Loaded saved Garmin tokens from disk")
             return
     except Exception as exc:
         print(f"[INFO] Saved tokens failed ({exc}), trying credentials")
