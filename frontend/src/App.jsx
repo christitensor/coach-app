@@ -6,7 +6,12 @@ import {
   Timer, TrendingUp, User, XCircle, Zap, PersonStanding, Waves
 } from 'lucide-react';
 
-const API = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/+$/, '');
+// API URL: localStorage override → build-time env → empty (triggers setup screen)
+function getApiUrl() {
+  try { const s = localStorage.getItem('garminCoachApiUrl'); if (s) return s.replace(/\/+$/, ''); } catch {}
+  return (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+}
+let API = getApiUrl();
 
 // ─── tiny helpers ────────────────────────────────────────────────────────────
 
@@ -161,10 +166,50 @@ const TABS = [
   { id: 'routes',      label: 'Routes',      icon: <Route className="w-4 h-4" /> },
 ];
 
+// ─── Setup screen (no backend URL configured) ────────────────────────────────
+function SetupScreen({ onSave }) {
+  const [url, setUrl] = useState('');
+  function save() {
+    const clean = url.trim().replace(/\/+$/, '');
+    if (!clean) return;
+    try { localStorage.setItem('garminCoachApiUrl', clean); } catch {}
+    API = clean;
+    onSave();
+  }
+  return (
+    <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
+      <div className="w-full max-w-sm space-y-6">
+        <div className="text-center">
+          <div className="inline-flex items-center justify-center bg-sky-600 p-3 rounded-2xl mb-4">
+            <Mountain className="w-8 h-8 text-white" />
+          </div>
+          <h1 className="text-2xl font-bold text-white">Garmin Training Coach</h1>
+          <p className="text-sm text-gray-400 mt-2">Enter your backend URL to get started</p>
+        </div>
+        <Card>
+          <div className="space-y-4">
+            <Input label="Backend URL" value={url} onChange={setUrl}
+              placeholder="https://garmin-coach-api.onrender.com" />
+            <p className="text-xs text-gray-500">
+              Deploy the <code className="text-gray-300">garmin_backend/</code> folder to Render,
+              then paste the URL here. It's saved on this device only.
+            </p>
+            <PrimaryButton onClick={save} className="w-full" disabled={!url.trim()}>
+              Save &amp; Continue
+            </PrimaryButton>
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
+  const [hasApi, setHasApi]         = useState(!!getApiUrl());
   const [connected, setConnected]   = useState(false);
   const [userName, setUserName]     = useState('');
   const [activeTab, setActiveTab]   = useState('dashboard');
+  const [showSettings, setShowSettings] = useState(false);
 
   function handleLogin(name) {
     setUserName(name);
@@ -178,9 +223,29 @@ export default function App() {
     setActiveTab('dashboard');
   }
 
-  if (!connected) {
-    return <LoginScreen onLogin={handleLogin} />;
-  }
+  if (!hasApi) return <SetupScreen onSave={() => setHasApi(true)} />;
+  if (!connected) return <LoginScreen onLogin={handleLogin} />;
+
+  if (showSettings) return (
+    <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
+      <div className="w-full max-w-sm space-y-4">
+        <h2 className="text-white font-bold text-lg">Settings</h2>
+        <Card>
+          <div className="space-y-3">
+            <Input label="Backend URL" value={getApiUrl()} onChange={(v) => {
+              try { localStorage.setItem('garminCoachApiUrl', v.replace(/\/+$/, '')); } catch {}
+              API = v.replace(/\/+$/, '');
+            }} placeholder="https://garmin-coach-api.onrender.com" />
+            <PrimaryButton onClick={() => setShowSettings(false)} className="w-full">Done</PrimaryButton>
+            <button onClick={() => { handleLogout(); setShowSettings(false); }}
+              className="w-full text-sm text-rose-400 hover:text-rose-300 py-2">
+              Disconnect from Garmin
+            </button>
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-200">
@@ -199,10 +264,10 @@ export default function App() {
             </div>
           </div>
           <button
-            onClick={handleLogout}
+            onClick={() => setShowSettings(true)}
             className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition"
           >
-            <LogOut className="w-4 h-4" /> Disconnect
+            ⚙️
           </button>
         </header>
 
