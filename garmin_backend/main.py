@@ -91,28 +91,37 @@ _mfa_required = False
 _anthropic = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
 
 
-def _load_garth_tokens():
-    """Load pre-saved Garmin tokens from GARTH_TOKENS env var (base64 JSON of token files)."""
-    global _garmin
-    token_b64 = os.environ.get("GARTH_TOKENS", "")
-    if not token_b64:
+_garmin_status = "disconnected"   # disconnected | connecting | connected | error
+_garmin_error  = ""
+
+
+def _auto_connect():
+    """Auto-connect using GARMIN_EMAIL + GARMIN_PASSWORD env vars at startup."""
+    global _garmin, _garmin_status, _garmin_error
+    email    = os.environ.get("GARMIN_EMAIL", "")
+    password = os.environ.get("GARMIN_PASSWORD", "")
+    if not email or not password:
         return
+    _garmin_status = "connecting"
     try:
-        files = json.loads(base64.b64decode(token_b64).decode())
-        os.makedirs(GARTH_HOME, exist_ok=True)
-        for fname, content in files.items():
-            with open(os.path.join(GARTH_HOME, fname), "w") as f:
-                f.write(content)
-        client = Garmin()
-        client.login(GARTH_HOME)
+        client = Garmin(email, password)
+        try:
+            client.login(GARTH_HOME)
+        except FileNotFoundError:
+            client.login()
+            os.makedirs(GARTH_HOME, exist_ok=True)
+            client.garth.dump(GARTH_HOME)
         with _garmin_lock:
             _garmin = client
-        print("[INFO] Loaded Garmin tokens from GARTH_TOKENS env var")
+        _garmin_status = "connected"
+        print("[INFO] Auto-connected to Garmin")
     except Exception as exc:
-        print(f"[WARN] Could not load GARTH_TOKENS: {exc}")
+        _garmin_status = "error"
+        _garmin_error  = str(exc)
+        print(f"[ERROR] Auto-connect failed: {exc}")
 
 
-_load_garth_tokens()
+threading.Thread(target=_auto_connect, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -225,8 +234,9 @@ async def health_check():
     return {
         "status": "ok",
         "garmin_connected": _garmin is not None,
+        "garmin_status": _garmin_status,
+        "garmin_error": _garmin_error,
         "mfa_pending": _mfa_required,
-        "auto_connected": _garmin is not None and bool(os.environ.get("GARTH_TOKENS")),
     }
 
 

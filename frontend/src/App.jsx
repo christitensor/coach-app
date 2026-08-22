@@ -207,24 +207,62 @@ function SetupScreen({ onSave }) {
 export default function App() {
   const [hasApi, setHasApi]         = useState(!!getApiUrl());
   const [connected, setConnected]   = useState(false);
-  const [userName, setUserName]     = useState('');
+  const [garminStatus, setGarminStatus] = useState('connecting');
+  const [garminError, setGarminError]   = useState('');
+  const [userName, setUserName]     = useState('Athlete');
   const [activeTab, setActiveTab]   = useState('dashboard');
   const [showSettings, setShowSettings] = useState(false);
 
-  function handleLogin(name) {
-    setUserName(name);
-    setConnected(true);
-  }
+  useEffect(() => {
+    if (!hasApi) return;
+    let cancelled = false;
+    async function poll() {
+      for (let i = 0; i < 20; i++) {
+        try {
+          const data = await apiFetch('/api/health');
+          if (cancelled) return;
+          setGarminStatus(data.garmin_status || 'connecting');
+          if (data.garmin_connected) { setConnected(true); return; }
+          if (data.garmin_status === 'error') { setGarminError(data.garmin_error || 'Connection failed'); return; }
+          if (data.garmin_status === 'disconnected') { setConnected(false); return; }
+        } catch {}
+        if (cancelled) return;
+        await new Promise(r => setTimeout(r, 3000));
+      }
+      if (!cancelled) setGarminStatus('disconnected');
+    }
+    poll();
+    return () => { cancelled = true; };
+  }, [hasApi]);
 
   function handleLogout() {
     apiFetch('/api/garmin/disconnect', { method: 'POST' }).catch(() => {});
     setConnected(false);
-    setUserName('');
+    setGarminStatus('disconnected');
     setActiveTab('dashboard');
   }
 
   if (!hasApi) return <SetupScreen onSave={() => setHasApi(true)} />;
-  if (!connected) return <LoginScreen onLogin={handleLogin} />;
+
+  if (!connected) return (
+    <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
+      <div className="text-center space-y-4">
+        <div className="inline-flex items-center justify-center bg-sky-600 p-3 rounded-2xl">
+          <Mountain className="w-8 h-8 text-white" />
+        </div>
+        <h1 className="text-2xl font-bold text-white">Garmin Training Coach</h1>
+        {garminStatus === 'error' ? (
+          <ErrorBox message={garminError || 'Could not connect to Garmin. Check GARMIN_EMAIL and GARMIN_PASSWORD in Render.'} />
+        ) : garminStatus === 'disconnected' ? (
+          <p className="text-gray-400 text-sm">Set GARMIN_EMAIL and GARMIN_PASSWORD in your Render environment to get started.</p>
+        ) : (
+          <div className="flex items-center justify-center gap-2 text-amber-400 text-sm">
+            <Spinner size={4} /> Connecting to Garmin…
+          </div>
+        )}
+      </div>
+    </div>
+  );
 
   if (showSettings) return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
