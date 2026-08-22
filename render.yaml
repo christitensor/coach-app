@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: garmin-coach-api
+    runtime: python
+    rootDir: garmin_backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false          # set manually in Render dashboard
+      - key: NOTION_API_KEY
+        sync: false          # set manually in Render dashboard
+      - key: GARTH_HOME
+        value: /opt/render/project/.garth
