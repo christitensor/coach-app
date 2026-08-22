@@ -4,6 +4,7 @@ Connects to Garmin Connect, fetches fitness data, and uses Claude AI
 to generate personalized workouts and route suggestions.
 """
 
+import asyncio
 import json
 import os
 import re
@@ -210,11 +211,12 @@ async def health_check():
 async def connect_garmin(req: ConnectRequest):
     global _garmin, _mfa_required
 
+    login_exc: list = []
+
     def do_login():
         global _garmin
         try:
             client = Garmin(req.email, req.password, prompt_mfa=_mfa_callback)
-            # Try existing saved tokens first
             try:
                 client.login(GARTH_HOME)
             except FileNotFoundError:
@@ -225,16 +227,19 @@ async def connect_garmin(req: ConnectRequest):
                 _garmin = client
         except Exception as exc:
             print(f"[ERROR] Login failed: {exc}")
-            raise
+            login_exc.append(exc)
 
     try:
-        with _garmin_lock:
-            pass  # just test the lock
-
-        # Run login in a thread so MFA callback can work asynchronously
         login_thread = threading.Thread(target=do_login, daemon=True)
         login_thread.start()
-        login_thread.join(timeout=15)  # wait up to 15s for non-MFA login
+        # Use asyncio.to_thread so we don't block the event loop
+        await asyncio.to_thread(login_thread.join, 30)
+
+        if login_exc:
+            exc = login_exc[0]
+            if isinstance(exc, GarminConnectAuthenticationError):
+                raise HTTPException(status_code=401, detail=f"Authentication failed: {exc}")
+            raise HTTPException(status_code=500, detail=str(exc))
 
         if _mfa_required:
             return {"success": False, "mfa_required": True, "message": "MFA code required"}
@@ -248,8 +253,6 @@ async def connect_garmin(req: ConnectRequest):
         name = safe_call(_garmin.get_full_name) or req.email.split("@")[0]
         return {"success": True, "name": name}
 
-    except GarminConnectAuthenticationError as exc:
-        raise HTTPException(status_code=401, detail=f"Authentication failed: {exc}")
     except GarminConnectConnectionError as exc:
         raise HTTPException(status_code=503, detail=f"Garmin Connect unreachable: {exc}")
     except HTTPException:
