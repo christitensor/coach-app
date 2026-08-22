@@ -96,25 +96,45 @@ _garmin_error  = ""
 
 
 def _auto_connect():
-    """Auto-connect using GARMIN_EMAIL + GARMIN_PASSWORD env vars at startup."""
+    """Auto-connect at startup. Tries saved tokens first, then credentials."""
     global _garmin, _garmin_status, _garmin_error
+    _garmin_status = "connecting"
+
+    # 1. Try loading saved tokens (avoids hitting Garmin SSO on every restart)
+    try:
+        if os.path.isdir(GARTH_HOME) and os.listdir(GARTH_HOME):
+            client = Garmin()
+            client.login(GARTH_HOME)
+            with _garmin_lock:
+                _garmin = client
+            _garmin_status = "connected"
+            print("[INFO] Loaded saved Garmin tokens")
+            return
+    except Exception as exc:
+        print(f"[INFO] Saved tokens failed ({exc}), trying credentials")
+
+    # 2. Fall back to credentials login
     email    = os.environ.get("GARMIN_EMAIL", "")
     password = os.environ.get("GARMIN_PASSWORD", "")
     if not email or not password:
+        _garmin_status = "disconnected"
         return
-    _garmin_status = "connecting"
+
     try:
         client = Garmin(email, password)
-        try:
-            client.login(GARTH_HOME)
-        except FileNotFoundError:
-            client.login()
-            os.makedirs(GARTH_HOME, exist_ok=True)
-            client.garth.dump(GARTH_HOME)
+        client.login()
+        os.makedirs(GARTH_HOME, exist_ok=True)
+        client.garth.dump(GARTH_HOME)
+        # Log tokens so user can set GARTH_TOKENS env var for persistence
+        files = {}
+        for fname in os.listdir(GARTH_HOME):
+            with open(os.path.join(GARTH_HOME, fname)) as f:
+                files[fname] = f.read()
+        token_b64 = base64.b64encode(json.dumps(files).encode()).decode()
+        print(f"[INFO] Garmin login successful. Set this as GARTH_TOKENS env var to avoid re-login on restarts:\n{token_b64}")
         with _garmin_lock:
             _garmin = client
         _garmin_status = "connected"
-        print("[INFO] Auto-connected to Garmin")
     except Exception as exc:
         _garmin_status = "error"
         _garmin_error  = str(exc)
