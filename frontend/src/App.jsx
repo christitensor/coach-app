@@ -293,6 +293,25 @@ function LoginScreen({ onLogin }) {
   const [mfaNeeded, setMfaNeeded] = useState(false);
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState('');
+  const [waking, setWaking]     = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function wake() {
+      for (let i = 0; i < 10; i++) {
+        try {
+          await apiFetch('/api/health');
+          if (!cancelled) setWaking(false);
+          return;
+        } catch {}
+        if (cancelled) return;
+        await new Promise(r => setTimeout(r, 3000));
+      }
+      if (!cancelled) setWaking(false);
+    }
+    wake();
+    return () => { cancelled = true; };
+  }, []);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -340,6 +359,11 @@ function LoginScreen({ onLogin }) {
           </div>
           <h1 className="text-2xl font-bold text-white">Garmin Training Coach</h1>
           <p className="text-sm text-gray-400 mt-1">Connect your Garmin account to get started</p>
+          {waking && (
+            <div className="flex items-center justify-center gap-2 mt-3 text-xs text-amber-400">
+              <Spinner size={3} /> Waking up server…
+            </div>
+          )}
         </div>
 
         <Card>
@@ -348,8 +372,8 @@ function LoginScreen({ onLogin }) {
               <Input label="Garmin Email" type="email" value={email} onChange={setEmail} placeholder="you@example.com" />
               <Input label="Password" type="password" value={password} onChange={setPassword} placeholder="••••••••" />
               {error && <ErrorBox message={error} />}
-              <PrimaryButton loading={loading} className="w-full">
-                Connect to Garmin
+              <PrimaryButton loading={loading || waking} className="w-full">
+                {waking ? 'Waiting for server…' : 'Connect to Garmin'}
               </PrimaryButton>
             </form>
           ) : (
