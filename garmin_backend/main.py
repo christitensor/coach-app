@@ -5,6 +5,7 @@ to generate personalized workouts and route suggestions.
 """
 
 import asyncio
+import base64
 import json
 import os
 import re
@@ -88,6 +89,30 @@ _mfa_code: Optional[str] = None
 _mfa_required = False
 
 _anthropic = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+
+
+def _load_garth_tokens():
+    """Load pre-saved Garmin tokens from GARTH_TOKENS env var (base64 JSON of token files)."""
+    global _garmin
+    token_b64 = os.environ.get("GARTH_TOKENS", "")
+    if not token_b64:
+        return
+    try:
+        files = json.loads(base64.b64decode(token_b64).decode())
+        os.makedirs(GARTH_HOME, exist_ok=True)
+        for fname, content in files.items():
+            with open(os.path.join(GARTH_HOME, fname), "w") as f:
+                f.write(content)
+        client = Garmin()
+        client.login(GARTH_HOME)
+        with _garmin_lock:
+            _garmin = client
+        print("[INFO] Loaded Garmin tokens from GARTH_TOKENS env var")
+    except Exception as exc:
+        print(f"[WARN] Could not load GARTH_TOKENS: {exc}")
+
+
+_load_garth_tokens()
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +226,7 @@ async def health_check():
         "status": "ok",
         "garmin_connected": _garmin is not None,
         "mfa_pending": _mfa_required,
+        "auto_connected": _garmin is not None and bool(os.environ.get("GARTH_TOKENS")),
     }
 
 

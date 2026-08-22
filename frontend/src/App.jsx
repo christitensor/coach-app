@@ -300,8 +300,10 @@ function LoginScreen({ onLogin }) {
     async function wake() {
       for (let i = 0; i < 10; i++) {
         try {
-          await apiFetch('/api/health');
-          if (!cancelled) setWaking(false);
+          const data = await apiFetch('/api/health');
+          if (cancelled) return;
+          if (data.auto_connected) { onLogin('Athlete'); return; }
+          setWaking(false);
           return;
         } catch {}
         if (cancelled) return;
